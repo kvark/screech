@@ -65,11 +65,12 @@ Right HUD (debug builds): camera distance/angles, recover/respawn, impulse tweak
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) on PR/push to `main`:
+Workflow definition lives at `ci/github-actions-ci.yml` (copy to `.github/workflows/ci.yml`
+once a GitHub token with the `workflow` scope can push Actions files). On PR/push to `main` it:
 
-1. Install mesa lavapipe, vulkan-tools, Xvfb, and windowing libs on `ubuntu-latest`
-2. `cargo build --release --locked`
-3. Run `./target/release/screech --smoke` under `VK_ICD_FILENAMES=…/lvp_icd.json` + `xvfb-run -a`
+1. Installs mesa lavapipe, vulkan-tools, Xvfb, and windowing libs on `ubuntu-latest`
+2. Runs `cargo build --release --locked`
+3. Runs `./target/release/screech --smoke` under `VK_ICD_FILENAMES=…/lvp_icd.json` + `xvfb-run -a`
 
 ## Layout
 
