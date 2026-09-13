@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-smoke:
+    name: build + lavapipe smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Vulkan / Xvfb / windowing deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            xvfb \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release, locked)
+        run: cargo build --release --locked
+
+      - name: Smoke under lavapipe + Xvfb
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          RUST_LOG: info
+          # Deterministic exit after init + a few frames (see SCREECH_SMOKE / --smoke).
+          SCREECH_SMOKE: "1"
+        run: |
+          # `--smoke` / SCREECH_SMOKE=1 initializes the engine, loads assets, ticks
+          # physics, renders a few frames (including one projectile spawn), then exits 0.
+          # A bare game-loop run would need `timeout` and treat 124 as success; smoke
+          # makes CI exit deterministic instead.
+          xvfb-run -a ./target/release/screech --smoke
