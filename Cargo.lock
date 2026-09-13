@@ -255,8 +255,7 @@ dependencies = [
 [[package]]
 name = "blade-asset"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd94d6d7236c487cacb8e5b769c7adc10e7306814b21ff63c4dbe3a609fbb82"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64",
  "bytemuck",
@@ -268,8 +267,7 @@ dependencies = [
 [[package]]
 name = "blade-egui"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b308e74008a9454e835550e098198d59685b4af2702a3d9fdc0ffeeb760a2307"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -282,8 +280,7 @@ dependencies = [
 [[package]]
 name = "blade-engine"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "740fdfbc97b95fa6b8084c2135855b1056320557f2c96feeb58d4578323d62f6"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64",
  "blade-asset",
@@ -314,8 +311,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f50161de1b828487e321d0df36cba06666e624a6a943293485f0dd0e97ef6ea"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "ash",
  "ash-window",
@@ -351,8 +347,7 @@ dependencies = [
 [[package]]
 name = "blade-helpers"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d56b94f8467ed115bae292ee7ac42d223e5cf119f47e259ce8a9784cff8a9f"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-render",
@@ -366,8 +361,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27142319e2f4c264581067eaccb9f80acccdde60d8b4bf57cc50cd3152f109ca"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -377,8 +371,7 @@ dependencies = [
 [[package]]
 name = "blade-particle"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6ee687563235512302f3fa919c9ca28b80bddd3b4ad2545eed11e094e5e2350"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -390,8 +383,7 @@ dependencies = [
 [[package]]
 name = "blade-render"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5154cd4b75ee0d1310873e853d9ef191b1d267b0ad3cf8e3bc097075eddbb94d"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "base64",
  "bevy_mikktspace",
@@ -421,8 +413,7 @@ dependencies = [
 [[package]]
 name = "blade-util"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b94414dc89eb8b198ef87844390ecbcd97dc9cbc70fa6d45d077f68cb187e9a"
+source = "git+https://github.com/kvark/blade?rev=33e2a5b003009acb1329a11207053f2f564db310#33e2a5b003009acb1329a11207053f2f564db310"
 dependencies = [
  "blade-graphics",
  "bytemuck",
@@ -2761,6 +2752,7 @@ name = "screech"
 version = "0.1.0"
 dependencies = [
  "blade-engine",
+ "blade-render",
  "egui",
  "egui-winit",
  "env_logger",
