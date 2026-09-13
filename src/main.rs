@@ -17,6 +17,39 @@ struct Vehicle {
     wheels: Vec<Wheel>,
 }
 
+struct Projectile {
+    handle: blade_engine::ObjectHandle,
+    age: f32,
+}
+
+const PROJECTILE_SPEED: f32 = 45.0;
+const PROJECTILE_LIFETIME: f32 = 3.0;
+const PROJECTILE_GRACE: f32 = 0.12;
+const PROJECTILE_RADIUS: f32 = 0.18;
+const SMOKE_FRAMES: u32 = 45;
+
+fn projectile_object_config() -> blade_engine::config::Object {
+    blade_engine::config::Object {
+        name: "projectile".to_string(),
+        visuals: vec![blade_engine::config::Visual {
+            model: "projectile.gltf".to_string(),
+            scale: PROJECTILE_RADIUS * 2.0,
+            ..Default::default()
+        }],
+        colliders: vec![blade_engine::config::Collider {
+            density: 40.0,
+            shape: blade_engine::config::Shape::Ball {
+                radius: PROJECTILE_RADIUS,
+            },
+            friction: 0.05,
+            restitution: 0.35,
+            pos: [0.0; 3].into(),
+            rot: [0.0; 3].into(),
+        }],
+        additional_mass: None,
+    }
+}
+
 struct Game {
     // engine stuff
     engine: blade_engine::Engine,
@@ -29,10 +62,13 @@ struct Game {
     egui_state: egui_winit::State,
     egui_viewport_id: egui::ViewportId,
     // game data
-    _ground_handle: blade_engine::ObjectHandle,
+        _ground_handle: blade_engine::ObjectHandle,
     vehicle: Vehicle,
+    projectiles: Vec<Projectile>,
     cam_config: config::Camera,
     spawn_pos: glam::Vec3,
+    /// When set, decrement each redraw and quit at 0 (CI / lavapipe smoke).
+    smoke_frames_left: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,6 +354,9 @@ impl Game {
         let egui_state =
             egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
 
+        let smoke = std::env::var_os("SCREECH_SMOKE").is_some()
+            || std::env::args().any(|a| a == "--smoke");
+
         Self {
             engine,
             last_physics_update: time::Instant::now(),
@@ -329,8 +368,10 @@ impl Game {
             egui_viewport_id,
             _ground_handle: ground_handle,
             vehicle,
+            projectiles: Vec::new(),
             cam_config,
             spawn_pos,
+            smoke_frames_left: smoke.then_some(SMOKE_FRAMES),
         }
     }
 
@@ -393,12 +434,81 @@ impl Game {
         self.vehicle.wheels = wheels;
     }
 
+    fn fire_projectile(&mut self) {
+        let transform = self.engine.get_object_transform(
+            self.vehicle.body_handle,
+            blade_engine::Prediction::LastKnown,
+        );
+        let orientation = glam::Quat::from(transform.orientation);
+        // Vehicle local: X=left, Y=up, Z=forward
+        let forward = orientation * glam::Vec3::Z;
+        let up = orientation * glam::Vec3::Y;
+        let spawn_pos =
+            glam::Vec3::from(transform.position) + forward * 2.2 + up * 0.45;
+
+        let handle = self.engine.add_object(
+            &projectile_object_config(),
+            blade_engine::Transform {
+                position: spawn_pos.into(),
+                orientation: transform.orientation,
+            },
+            blade_engine::DynamicInput::Full,
+        );
+        self.engine.set_ccd_enabled(handle, true);
+        self.engine.set_color_tint(handle, [1.0, 0.35, 0.05, 1.0]);
+
+        let (car_lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let velocity = glam::Vec3::from(car_lin) + forward * PROJECTILE_SPEED;
+        self.engine
+            .set_velocity(handle, velocity.into(), [0.0; 3].into());
+
+        self.projectiles.push(Projectile { handle, age: 0.0 });
+        log::info!("Fired projectile {:?}", handle);
+    }
+
+    fn update_projectiles(&mut self, dt: f32) {
+        for projectile in self.projectiles.iter_mut() {
+            projectile.age += dt;
+        }
+
+        // Collect projectile handles involved in a contact after the grace window.
+        // Ground + arena wall cuboids share `ground_handle`; hitting them or any
+        // other body (car/wheels) despawns the shot.
+        let mut hit: Vec<blade_engine::ObjectHandle> = Vec::new();
+        for contact in self.engine.drain_contacts() {
+            for candidate in [contact.object_a, contact.object_b] {
+                let Some(p) = self.projectiles.iter().find(|p| p.handle == candidate) else {
+                    continue;
+                };
+                if p.age >= PROJECTILE_GRACE {
+                    hit.push(candidate);
+                }
+            }
+        }
+        hit.sort_unstable();
+        hit.dedup();
+
+        let mut i = 0;
+        while i < self.projectiles.len() {
+            let p = &self.projectiles[i];
+            let expired = p.age >= PROJECTILE_LIFETIME;
+            let collided = hit.iter().any(|h| *h == p.handle);
+            if expired || collided {
+                let removed = self.projectiles.swap_remove(i);
+                self.engine.remove_object(removed.handle);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn update_time(&mut self) {
         let engine_dt = self.last_physics_update.elapsed().as_secs_f32();
         self.last_physics_update = time::Instant::now();
         if !self.is_paused {
             //self.align_wheels();
             self.engine.update(engine_dt);
+            self.update_projectiles(engine_dt);
         }
     }
 
@@ -473,6 +583,9 @@ impl Game {
                         (self.vehicle.jump_impulse * up).into(),
                     );
                 }
+                winit::keyboard::KeyCode::KeyF => {
+                    self.fire_projectile();
+                }
                 _ => {}
             },
             winit::event::WindowEvent::KeyboardInput {
@@ -496,7 +609,22 @@ impl Game {
                 return Err(QuitEvent);
             }
             winit::event::WindowEvent::RedrawRequested => {
+                // Smoke: fire once early so projectile path is exercised under lavapipe.
+                if let Some(left) = self.smoke_frames_left {
+                    if left == SMOKE_FRAMES.saturating_sub(5) {
+                        self.fire_projectile();
+                    }
+                }
+
                 let wait = self.on_draw();
+
+                if let Some(left) = self.smoke_frames_left.as_mut() {
+                    *left = left.saturating_sub(1);
+                    if *left == 0 {
+                        log::info!("Smoke complete — exiting cleanly");
+                        return Err(QuitEvent);
+                    }
+                }
 
                 return Ok(
                     if let Some(repaint_after_instant) = std::time::Instant::now().checked_add(wait)
@@ -700,6 +828,11 @@ impl winit::application::ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
+    if std::env::var_os("SCREECH_SMOKE").is_some()
+        || std::env::args().any(|a| a == "--smoke")
+    {
+        log::info!("Smoke mode: init, render ~{SMOKE_FRAMES} frames, exit 0");
+    }
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
     let mut app = App { game: None };
     event_loop.run_app(&mut app).unwrap();
