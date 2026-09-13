@@ -138,7 +138,8 @@ impl Game {
 
         // Resolve assets relative to the crate root so `cargo run` works from any cwd.
         let data_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
-        let shader_path = data_path.join("shaders");
+        // WGSL sources ship inside blade-render; no need to vendor under data/shaders.
+        let shader_path = blade_render::shader_dir();
         // Lavapipe has no ray-query; default to raster. Set SCREECH_RT=1 for RayTracer.
         let render_backend = if std::env::var_os("SCREECH_RT").is_some() {
             blade_engine::config::RenderBackend::RayTracer

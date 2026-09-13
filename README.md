@@ -76,15 +76,14 @@ once a GitHub token with the `workflow` scope can push Actions files). On PR/pus
 
 - `src/main.rs`, `src/config.rs` — game loop and RON config types (from Blade vehicle example)
 - `data/` — level + vehicle assets (`level.ron`, `raceFuture.ron`, glTF/GLB, ground, projectile)
-- `data/shaders/` — Blade render shaders copied from `blade-render` 0.6 (`code/`), so `cargo run` works as an external crate without a Blade workspace checkout
 
-Shader path and data path are resolved via `CARGO_MANIFEST_DIR`.
+Data path is resolved via `CARGO_MANIFEST_DIR`. Shader path comes from `blade_render::shader_dir()` (WGSL shipped in the `blade-render` crate).
 
 ## Credits
 
-- Engine: [Blade](https://github.com/kvark/blade) (MIT) — `blade-engine` from crates.io
+- Engine: [Blade](https://github.com/kvark/blade) (MIT) — `blade-engine` / `blade-render` from git (main)
 - Vehicle example + assets (`raceFuture*`, `wheelRacing.glb`, `ground.*`, `orange_light_grid.png`) from Blade's `examples/vehicle` (MIT)
-- Shaders from `blade-render` (MIT)
+- Render shaders via `blade_render::shader_dir()` (MIT, packaged in `blade-render`)
 
 ## Status
 

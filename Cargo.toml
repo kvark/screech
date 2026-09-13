@@ -14,7 +14,9 @@ name = "screech"
 path = "src/main.rs"
 
 [dependencies]
-blade-engine = "0.2"
+# Pin to blade main that exposes blade_render::shader_dir() (PR #391).
+blade-engine = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = ["links"] }
 env_logger = "0.11"
