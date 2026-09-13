@@ -2,7 +2,7 @@
 
 Twisted Metal 2 remake on [Blade](https://github.com/kvark/blade).
 
-Current playable slice: **one driveable car in a walled arena** that can fire a simple physics projectile. Adapted from Blade's `examples/vehicle`.
+Current playable slice: **one driveable car in a walled arena**, a parked opponent mecho with HP, and a simple physics projectile. Adapted from Blade's `examples/vehicle`.
 
 ## Requirements
 
@@ -34,9 +34,9 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 
 ### Smoke mode (CI-friendly)
 
-Initializes the engine, loads assets, ticks physics, renders a few frames
-(including one projectile spawn), then **exits 0**. Prefer this over wrapping
-the infinite game loop in `timeout` (exit 124).
+Initializes the engine, loads assets (including a parked opponent), ticks physics,
+renders a few frames (including one projectile fired toward the opponent), then
+**exits 0**. Prefer this over wrapping the infinite game loop in `timeout` (exit 124).
 
 ```bash
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
@@ -55,13 +55,15 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 | `,` / `.` | Roll left / right |
 | Esc | Quit |
 
-Right HUD (debug builds): camera distance/angles, recover/respawn, impulse tweaks.
+Right HUD: camera distance/angles, recover/respawn, impulse tweaks, **opponent HP** bar.
 
 ## Arena / combat
 
 - Flat ground plus four wall cuboids (`data/level.ron` colliders; meshes in `ground.gltf`).
+- Parked opponent mecho ahead of spawn (+Z), red tint, **100 HP**.
 - `F` spawns a small dynamic ball (`data/projectile.gltf`) ahead of the car with forward velocity + CCD.
-- Projectiles despawn on lifetime (~3s) or after contact with ground/walls/other bodies (short grace so the shot clears the chassis).
+- Projectile contact with the opponent deals **25 damage** and despawns the shot; at 0 HP the opponent is marked destroyed (dark tint, no further hits).
+- Projectiles also despawn on lifetime (~3s) or contact with ground/walls/other bodies (short grace so the shot clears the chassis).
 
 ## CI
 
@@ -87,4 +89,4 @@ Data path is resolved via `CARGO_MANIFEST_DIR`. Shader path comes from `blade_re
 
 ## Status
 
-Combat arena slice: driveable car, solid/visible walls, simple projectile, CI smoke.
+Combat arena slice: driveable car, parked opponent with HP, solid/visible walls, simple projectile, CI smoke.
