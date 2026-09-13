@@ -22,11 +22,23 @@ struct Projectile {
     age: f32,
 }
 
+/// Parked dummy mecho across the arena — HP drops when projectiles hit it.
+struct Opponent {
+    handle: blade_engine::ObjectHandle,
+    hp: f32,
+    max_hp: f32,
+    destroyed: bool,
+}
+
 const PROJECTILE_SPEED: f32 = 45.0;
 const PROJECTILE_LIFETIME: f32 = 3.0;
 const PROJECTILE_GRACE: f32 = 0.12;
 const PROJECTILE_RADIUS: f32 = 0.18;
-const SMOKE_FRAMES: u32 = 45;
+const PROJECTILE_DAMAGE: f32 = 25.0;
+const OPPONENT_MAX_HP: f32 = 100.0;
+/// Ahead of default spawn (+Z) so the smoke F-fire can reach it.
+const OPPONENT_SPAWN: [f32; 3] = [0.0, 2.0, 8.0];
+const SMOKE_FRAMES: u32 = 90;
 
 fn projectile_object_config() -> blade_engine::config::Object {
     blade_engine::config::Object {
@@ -50,6 +62,31 @@ fn projectile_object_config() -> blade_engine::config::Object {
     }
 }
 
+/// Parked dummy using the same raceFuture body mesh/collider as the player.
+fn opponent_object_config() -> blade_engine::config::Object {
+    blade_engine::config::Object {
+        name: "opponent/body".to_string(),
+        visuals: vec![blade_engine::config::Visual {
+            model: "raceFuture-body.glb".to_string(),
+            pos: [0.0, -0.3, 0.1].into(),
+            rot: [0.0, 180.0, 0.0].into(),
+            ..Default::default()
+        }],
+        colliders: vec![blade_engine::config::Collider {
+            density: 100.0,
+            // Taller than the visual mesh so forward shots at body height connect.
+            shape: blade_engine::config::Shape::Cuboid {
+                half: [0.8, 0.9, 1.3].into(),
+            },
+            friction: 1.0,
+            restitution: 0.0,
+            pos: [0.0; 3].into(),
+            rot: [0.0; 3].into(),
+        }],
+        additional_mass: None,
+    }
+}
+
 struct Game {
     // engine stuff
     engine: blade_engine::Engine,
@@ -64,6 +101,7 @@ struct Game {
     // game data
         _ground_handle: blade_engine::ObjectHandle,
     vehicle: Vehicle,
+    opponent: Opponent,
     projectiles: Vec<Projectile>,
     cam_config: config::Camera,
     spawn_pos: glam::Vec3,
@@ -154,7 +192,8 @@ impl Game {
                 cache_path: "asset-cache".to_string(),
                 time_step: 0.01,
                 render_backend,
-                gui_enabled: cfg!(debug_assertions),
+                // Always on so opponent HP is visible in release playtests.
+                gui_enabled: true,
             },
         );
 
@@ -350,6 +389,30 @@ impl Game {
             }
         }
 
+        // Parked opponent mecho ahead of the player (+Z), reusing the raceFuture body.
+        let opponent_pos = glam::Vec3::from(OPPONENT_SPAWN);
+        // Face the player (180° yaw). Fixed / Empty = parked.
+        let opponent_orient = glam::Quat::from_rotation_y(consts::PI);
+        let opponent_handle = engine.add_object(
+            &opponent_object_config(),
+            blade_engine::Transform {
+                position: opponent_pos.into(),
+                orientation: opponent_orient.into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        );
+        engine.set_color_tint(opponent_handle, [0.95, 0.25, 0.2, 1.0]);
+        let opponent = Opponent {
+            handle: opponent_handle,
+            hp: OPPONENT_MAX_HP,
+            max_hp: OPPONENT_MAX_HP,
+            destroyed: false,
+        };
+        log::info!(
+            "Spawned parked opponent at {:?} with {OPPONENT_MAX_HP} HP",
+            opponent_pos
+        );
+
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
         let egui_state =
@@ -369,6 +432,7 @@ impl Game {
             egui_viewport_id,
             _ground_handle: ground_handle,
             vehicle,
+            opponent,
             projectiles: Vec::new(),
             cam_config,
             spawn_pos,
@@ -467,27 +531,111 @@ impl Game {
         log::info!("Fired projectile {:?}", handle);
     }
 
+    /// Spawn a projectile aimed at a world-space point (used by smoke / testing).
+    fn fire_projectile_toward(&mut self, target: glam::Vec3) {
+        let transform = self.engine.get_object_transform(
+            self.vehicle.body_handle,
+            blade_engine::Prediction::LastKnown,
+        );
+        let origin = glam::Vec3::from(transform.position) + glam::Vec3::Y * 0.45;
+        let dir = (target - origin).normalize_or_zero();
+        let dir = if dir.length_squared() < 1e-6 {
+            glam::Vec3::Z
+        } else {
+            dir
+        };
+        let spawn_pos = origin + dir * 2.2;
+        let orientation = glam::Quat::from_rotation_arc(glam::Vec3::Z, dir);
+
+        let handle = self.engine.add_object(
+            &projectile_object_config(),
+            blade_engine::Transform {
+                position: spawn_pos.into(),
+                orientation: orientation.into(),
+            },
+            blade_engine::DynamicInput::Full,
+        );
+        self.engine.set_ccd_enabled(handle, true);
+        self.engine.set_color_tint(handle, [1.0, 0.35, 0.05, 1.0]);
+
+        let (car_lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let velocity = glam::Vec3::from(car_lin) + dir * PROJECTILE_SPEED;
+        self.engine
+            .set_velocity(handle, velocity.into(), [0.0; 3].into());
+
+        self.projectiles.push(Projectile { handle, age: 0.0 });
+        log::info!("Fired projectile toward {:?} {:?}", target, handle);
+    }
+
+    fn apply_opponent_damage(&mut self, amount: f32) {
+        if self.opponent.destroyed {
+            return;
+        }
+        self.opponent.hp = (self.opponent.hp - amount).max(0.0);
+        log::info!(
+            "Opponent HP: {:.0}/{:.0}",
+            self.opponent.hp,
+            self.opponent.max_hp
+        );
+        if self.opponent.hp <= 0.0 {
+            self.opponent.destroyed = true;
+            // Tint wrecked + stop further hits (body stays as a husk).
+            self.engine
+                .set_color_tint(self.opponent.handle, [0.15, 0.15, 0.15, 1.0]);
+            log::info!("Opponent destroyed");
+        } else {
+            // Flash damage tint proportional to remaining HP.
+            let t = self.opponent.hp / self.opponent.max_hp;
+            self.engine.set_color_tint(
+                self.opponent.handle,
+                [0.95, 0.15 + 0.25 * t, 0.15 + 0.1 * t, 1.0],
+            );
+        }
+    }
+
     fn update_projectiles(&mut self, dt: f32) {
         for projectile in self.projectiles.iter_mut() {
             projectile.age += dt;
         }
 
         // Collect projectile handles involved in a contact after the grace window.
-        // Ground + arena wall cuboids share `ground_handle`; hitting them or any
-        // other body (car/wheels) despawns the shot.
+        // Hitting the parked opponent applies damage; ground/walls/other bodies
+        // also despawn the shot.
         let mut hit: Vec<blade_engine::ObjectHandle> = Vec::new();
+        let mut damaged_by: Vec<blade_engine::ObjectHandle> = Vec::new();
+        let opponent_handle = self.opponent.handle;
+        let opponent_alive = !self.opponent.destroyed;
         for contact in self.engine.drain_contacts() {
-            for candidate in [contact.object_a, contact.object_b] {
-                let Some(p) = self.projectiles.iter().find(|p| p.handle == candidate) else {
-                    continue;
-                };
-                if p.age >= PROJECTILE_GRACE {
-                    hit.push(candidate);
-                }
+            let pair = [contact.object_a, contact.object_b];
+            let Some(&proj) = pair.iter().find(|h| {
+                self.projectiles.iter().any(|p| p.handle == **h)
+            }) else {
+                continue;
+            };
+            let Some(p) = self.projectiles.iter().find(|p| p.handle == proj) else {
+                continue;
+            };
+            let other = if pair[0] == proj { pair[1] } else { pair[0] };
+            let hits_opponent = opponent_alive && other == opponent_handle;
+            // Grace avoids despawning on the chassis; opponent hits still count.
+            if p.age < PROJECTILE_GRACE && !hits_opponent {
+                continue;
+            }
+            hit.push(proj);
+            if hits_opponent {
+                damaged_by.push(proj);
             }
         }
         hit.sort_unstable();
         hit.dedup();
+        damaged_by.sort_unstable();
+        damaged_by.dedup();
+
+        if !damaged_by.is_empty() {
+            // One damage tick per projectile that connected this frame.
+            let hits = damaged_by.len() as f32;
+            self.apply_opponent_damage(PROJECTILE_DAMAGE * hits);
+        }
 
         let mut i = 0;
         while i < self.projectiles.len() {
@@ -610,10 +758,19 @@ impl Game {
                 return Err(QuitEvent);
             }
             winit::event::WindowEvent::RedrawRequested => {
-                // Smoke: fire once early so projectile path is exercised under lavapipe.
+                // Smoke: fire at the parked opponent so contact/damage is exercised.
                 if let Some(left) = self.smoke_frames_left {
                     if left == SMOKE_FRAMES.saturating_sub(5) {
-                        self.fire_projectile();
+                        let aim = glam::Vec3::from(OPPONENT_SPAWN);
+                        self.fire_projectile_toward(aim);
+                    }
+                    if left == 1 {
+                        log::info!(
+                            "Smoke opponent HP: {:.0}/{} destroyed={}",
+                            self.opponent.hp,
+                            self.opponent.max_hp as u32,
+                            self.opponent.destroyed
+                        );
                     }
                 }
 
@@ -706,6 +863,26 @@ impl Game {
                 ui.add(
                     egui::DragValue::new(&mut self.vehicle.roll_impulse).prefix("Roll impulse: "),
                 );
+            });
+
+        egui::CollapsingHeader::new("Combat")
+            .default_open(true)
+            .show(ui, |ui| {
+                if self.opponent.destroyed {
+                    ui.colored_label(egui::Color32::DARK_GRAY, "Opponent: DESTROYED");
+                } else {
+                    ui.label(format!(
+                        "Opponent HP: {:.0} / {:.0}",
+                        self.opponent.hp, self.opponent.max_hp
+                    ));
+                    let frac = (self.opponent.hp / self.opponent.max_hp).clamp(0.0, 1.0);
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .desired_width(ui.available_width().max(80.0))
+                            .text(format!("{:.0}%", frac * 100.0)),
+                    );
+                }
+                ui.label("F — fire at parked mecho ahead (+Z)");
             });
 
         self.engine.populate_hud(ui);
