@@ -26,7 +26,7 @@ jobs:
             mesa-vulkan-drivers \
             vulkan-tools \
             xvfb \
-            libxkbcommon-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 \
             libwayland-dev \
             libx11-xcb-dev \
             libxcb-render0-dev \
@@ -46,7 +46,6 @@ jobs:
 
       - name: Smoke under lavapipe + Xvfb
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           RUST_LOG: info
           # Deterministic exit after init + a few frames (see SCREECH_SMOKE / --smoke).
           SCREECH_SMOKE: "1"
@@ -55,4 +54,6 @@ jobs:
           # physics, renders a few frames (including one projectile spawn), then exits 0.
           # A bare game-loop run would need `timeout` and treat 124 as success; smoke
           # makes CI exit deterministic instead.
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          test -n "$VK_ICD_FILENAMES"
           xvfb-run -a ./target/release/screech --smoke
