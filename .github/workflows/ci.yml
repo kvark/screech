@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -56,3 +55,24 @@ jobs:
           # A bare game-loop run would need `timeout` and treat 124 as success; smoke
           # makes CI exit deterministic instead.
           xvfb-run -a ./target/release/screech --smoke
+
+  web:
+    name: browser startup tests + WASM bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Browser startup regression tests
+        run: node --test web/boot.test.mjs
+      - name: Install matching wasm-bindgen CLI
+        run: |
+          VERSION=$(awk '/^name = "wasm-bindgen"$/ { found=1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+      - name: Build browser bundle
+        run: ./scripts/build-web.sh
