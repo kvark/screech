@@ -48,14 +48,15 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 
 | Key | Action |
 |-----|--------|
-| ↑ / ↓ | Drive forward / reverse |
-| ← / → | Steer |
+| W / S or ↑ / ↓ | Drive forward / reverse |
+| A / D or ← / → | Steer |
 | Space | Jump impulse |
 | `F` | Fire projectile |
 | `,` / `.` | Roll left / right |
+| R | Restart arena (restore target, clear shots, reset car) |
 | Esc | Quit |
 
-Right HUD: camera distance/angles, recover/respawn, impulse tweaks, **opponent HP** bar.
+Right HUD: objective, **opponent HP**, high-contrast completion feedback, and **Restart arena**. Camera and dynamics controls include recover/respawn and impulse tweaks. Respawn only resets the car; Restart restores the entire encounter.
 
 ## Arena / combat
 
@@ -63,16 +64,17 @@ Right HUD: camera distance/angles, recover/respawn, impulse tweaks, **opponent H
 - Parked opponent mecho ahead of spawn (+Z), red tint, **100 HP**.
 - `F` spawns a small dynamic ball (`data/projectile.gltf`) ahead of the car with forward velocity + CCD.
 - Projectile contact with the opponent deals **25 damage** and despawns the shot; at 0 HP the opponent is marked destroyed (dark tint, no further hits).
+- Destroying the target clears the current arena slice. Use **Restart arena** or `R` to replay without relaunching.
 - Projectiles also despawn on lifetime (~3s) or contact with ground/walls/other bodies (short grace so the shot clears the chassis).
 
 ## CI
 
-Workflow definition lives at `ci/github-actions-ci.yml` (copy to `.github/workflows/ci.yml`
-once a GitHub token with the `workflow` scope can push Actions files). On PR/push to `main` it:
+Workflow definition lives at `.github/workflows/ci.yml`. On PR/push to `main` it:
 
 1. Installs mesa lavapipe, vulkan-tools, Xvfb, and windowing libs on `ubuntu-latest`
-2. Runs `cargo build --release --locked`
-3. Runs `./target/release/screech --smoke` under `VK_ICD_FILENAMES=…/lvp_icd.json` + `xvfb-run -a`
+2. Checks formatting and runs `cargo test --release --locked`
+3. Runs `cargo build --release --locked`
+4. Runs `./target/release/screech --smoke` under `VK_ICD_FILENAMES=…/lvp_icd.json` + `xvfb-run -a`
 
 ## Layout
 
