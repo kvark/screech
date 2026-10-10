@@ -22,3 +22,6 @@ target
 
 # Blade cooked assets
 asset-cache/
+
+# Generated browser bundle
+/dist/
