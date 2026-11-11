@@ -1,3 +1,4 @@
+mod combat;
 mod config;
 
 use std::{f32::consts, fs, mem, ops, path::PathBuf, time};
@@ -25,17 +26,14 @@ struct Projectile {
 /// Parked dummy mecho across the arena — HP drops when projectiles hit it.
 struct Opponent {
     handle: blade_engine::ObjectHandle,
-    hp: f32,
-    max_hp: f32,
-    destroyed: bool,
+    combat: combat::Combat,
 }
 
 const PROJECTILE_SPEED: f32 = 45.0;
 const PROJECTILE_LIFETIME: f32 = 3.0;
 const PROJECTILE_GRACE: f32 = 0.12;
 const PROJECTILE_RADIUS: f32 = 0.18;
-const PROJECTILE_DAMAGE: f32 = 25.0;
-const OPPONENT_MAX_HP: f32 = 100.0;
+use combat::{MAX_HP as OPPONENT_MAX_HP, PROJECTILE_DAMAGE};
 /// Ahead of default spawn (+Z) so the smoke F-fire can reach it.
 const OPPONENT_SPAWN: [f32; 3] = [0.0, 2.0, 8.0];
 const SMOKE_FRAMES: u32 = 90;
@@ -99,7 +97,7 @@ struct Game {
     egui_state: egui_winit::State,
     egui_viewport_id: egui::ViewportId,
     // game data
-        _ground_handle: blade_engine::ObjectHandle,
+    _ground_handle: blade_engine::ObjectHandle,
     vehicle: Vehicle,
     opponent: Opponent,
     projectiles: Vec<Projectile>,
@@ -161,7 +159,8 @@ impl Game {
     fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> Self {
         log::info!("Initializing Rusted-Metal (Screech)");
 
-        let window_attributes = winit::window::Window::default_attributes().with_title("Rusted-Metal");
+        let window_attributes =
+            winit::window::Window::default_attributes().with_title("Rusted-Metal");
 
         let window = event_loop.create_window(window_attributes).unwrap();
 
@@ -169,7 +168,7 @@ impl Game {
             distance: 5.0,
             azimuth: 0.0,
             altitude: 0.5,
-            speed: 0.05,
+            speed: 8.0,
             target: [0.0, 1.0, 0.0],
             fov: 1.0,
         };
@@ -404,9 +403,7 @@ impl Game {
         engine.set_color_tint(opponent_handle, [0.95, 0.25, 0.2, 1.0]);
         let opponent = Opponent {
             handle: opponent_handle,
-            hp: OPPONENT_MAX_HP,
-            max_hp: OPPONENT_MAX_HP,
-            destroyed: false,
+            combat: combat::Combat::default(),
         };
         log::info!(
             "Spawned parked opponent at {:?} with {OPPONENT_MAX_HP} HP",
@@ -418,8 +415,8 @@ impl Game {
         let egui_state =
             egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
 
-        let smoke = std::env::var_os("SCREECH_SMOKE").is_some()
-            || std::env::args().any(|a| a == "--smoke");
+        let smoke =
+            std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke");
 
         Self {
             engine,
@@ -499,6 +496,24 @@ impl Game {
         self.vehicle.wheels = wheels;
     }
 
+    fn restart_arena(&mut self) {
+        self.set_velocity(0.0);
+        self.set_steering(0.0);
+        for projectile in self.projectiles.drain(..) {
+            self.engine.remove_object(projectile.handle);
+        }
+        self.engine.drain_contacts().for_each(drop);
+        self.opponent.combat.reset();
+        self.engine
+            .set_color_tint(self.opponent.handle, [0.95, 0.25, 0.2, 1.0]);
+        self.teleport(self.spawn_pos);
+        self.is_paused = false;
+        self.last_camera_base_quat = glam::Quat::IDENTITY;
+        self.last_physics_update = time::Instant::now();
+        self.last_camera_update = self.last_physics_update;
+        log::info!("Arena restarted: opponent HP {OPPONENT_MAX_HP}/{OPPONENT_MAX_HP}");
+    }
+
     fn fire_projectile(&mut self) {
         let transform = self.engine.get_object_transform(
             self.vehicle.body_handle,
@@ -508,8 +523,7 @@ impl Game {
         // Vehicle local: X=left, Y=up, Z=forward
         let forward = orientation * glam::Vec3::Z;
         let up = orientation * glam::Vec3::Y;
-        let spawn_pos =
-            glam::Vec3::from(transform.position) + forward * 2.2 + up * 0.45;
+        let spawn_pos = glam::Vec3::from(transform.position) + forward * 2.2 + up * 0.45;
 
         let handle = self.engine.add_object(
             &projectile_object_config(),
@@ -568,24 +582,23 @@ impl Game {
     }
 
     fn apply_opponent_damage(&mut self, amount: f32) {
-        if self.opponent.destroyed {
+        if self.opponent.combat.destroyed() {
             return;
         }
-        self.opponent.hp = (self.opponent.hp - amount).max(0.0);
+        self.opponent.combat.damage(amount);
         log::info!(
             "Opponent HP: {:.0}/{:.0}",
-            self.opponent.hp,
-            self.opponent.max_hp
+            self.opponent.combat.hp,
+            OPPONENT_MAX_HP
         );
-        if self.opponent.hp <= 0.0 {
-            self.opponent.destroyed = true;
+        if self.opponent.combat.hp <= 0.0 {
             // Tint wrecked + stop further hits (body stays as a husk).
             self.engine
                 .set_color_tint(self.opponent.handle, [0.15, 0.15, 0.15, 1.0]);
             log::info!("Opponent destroyed");
         } else {
             // Flash damage tint proportional to remaining HP.
-            let t = self.opponent.hp / self.opponent.max_hp;
+            let t = self.opponent.combat.hp / OPPONENT_MAX_HP;
             self.engine.set_color_tint(
                 self.opponent.handle,
                 [0.95, 0.15 + 0.25 * t, 0.15 + 0.1 * t, 1.0],
@@ -604,12 +617,13 @@ impl Game {
         let mut hit: Vec<blade_engine::ObjectHandle> = Vec::new();
         let mut damaged_by: Vec<blade_engine::ObjectHandle> = Vec::new();
         let opponent_handle = self.opponent.handle;
-        let opponent_alive = !self.opponent.destroyed;
+        let opponent_alive = !self.opponent.combat.destroyed();
         for contact in self.engine.drain_contacts() {
             let pair = [contact.object_a, contact.object_b];
-            let Some(&proj) = pair.iter().find(|h| {
-                self.projectiles.iter().any(|p| p.handle == **h)
-            }) else {
+            let Some(&proj) = pair
+                .iter()
+                .find(|h| self.projectiles.iter().any(|p| p.handle == **h))
+            else {
                 continue;
             };
             let Some(p) = self.projectiles.iter().find(|p| p.handle == proj) else {
@@ -641,7 +655,7 @@ impl Game {
         while i < self.projectiles.len() {
             let p = &self.projectiles[i];
             let expired = p.age >= PROJECTILE_LIFETIME;
-            let collided = hit.iter().any(|h| *h == p.handle);
+            let collided = hit.contains(&p.handle);
             if expired || collided {
                 let removed = self.projectiles.swap_remove(i);
                 self.engine.remove_object(removed.handle);
@@ -669,7 +683,23 @@ impl Game {
         if response.repaint {
             self.window.request_redraw();
         }
-        if response.consumed {
+        // Key releases and focus loss must stop the motors even when a HUD
+        // widget consumes input. Otherwise alt-tabbing can leave throttle held.
+        if matches!(event, winit::event::WindowEvent::Focused(false)) {
+            self.set_velocity(0.0);
+            self.set_steering(0.0);
+        }
+        let is_release = matches!(
+            event,
+            winit::event::WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    state: winit::event::ElementState::Released,
+                    ..
+                },
+                ..
+            }
+        );
+        if response.consumed && !is_release {
             return Ok(winit::event_loop::ControlFlow::Poll);
         }
 
@@ -686,16 +716,16 @@ impl Game {
                 winit::keyboard::KeyCode::Escape => {
                     return Err(QuitEvent);
                 }
-                winit::keyboard::KeyCode::ArrowUp => {
+                winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW => {
                     self.set_velocity(100.0);
                 }
-                winit::keyboard::KeyCode::ArrowDown => {
+                winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyS => {
                     self.set_velocity(-20.0);
                 }
-                winit::keyboard::KeyCode::ArrowLeft => {
+                winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyA => {
                     self.set_steering(1.0);
                 }
-                winit::keyboard::KeyCode::ArrowRight => {
+                winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyD => {
                     self.set_steering(-1.0);
                 }
                 winit::keyboard::KeyCode::Comma => {
@@ -732,6 +762,9 @@ impl Game {
                         (self.vehicle.jump_impulse * up).into(),
                     );
                 }
+                winit::keyboard::KeyCode::KeyR => {
+                    self.restart_arena();
+                }
                 winit::keyboard::KeyCode::KeyF => {
                     self.fire_projectile();
                 }
@@ -746,10 +779,16 @@ impl Game {
                     },
                 ..
             } => match key_code {
-                winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::ArrowDown => {
+                winit::keyboard::KeyCode::ArrowUp
+                | winit::keyboard::KeyCode::KeyW
+                | winit::keyboard::KeyCode::ArrowDown
+                | winit::keyboard::KeyCode::KeyS => {
                     self.set_velocity(0.0);
                 }
-                winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::ArrowRight => {
+                winit::keyboard::KeyCode::ArrowLeft
+                | winit::keyboard::KeyCode::KeyA
+                | winit::keyboard::KeyCode::ArrowRight
+                | winit::keyboard::KeyCode::KeyD => {
                     self.set_steering(0.0);
                 }
                 _ => {}
@@ -767,9 +806,9 @@ impl Game {
                     if left == 1 {
                         log::info!(
                             "Smoke opponent HP: {:.0}/{} destroyed={}",
-                            self.opponent.hp,
-                            self.opponent.max_hp as u32,
-                            self.opponent.destroyed
+                            self.opponent.combat.hp,
+                            OPPONENT_MAX_HP as u32,
+                            self.opponent.combat.destroyed()
                         );
                     }
                 }
@@ -800,8 +839,29 @@ impl Game {
     }
 
     fn populate_hud(&mut self, ui: &mut egui::Ui) {
+        ui.heading("SCREECH");
+        if self.opponent.combat.destroyed() {
+            ui.colored_label(egui::Color32::LIGHT_GREEN, "TARGET DESTROYED");
+            ui.label("Arena cleared. Restart for another round.");
+        } else {
+            ui.label("Destroy the parked opponent ahead.");
+            let fraction = self.opponent.combat.hp / OPPONENT_MAX_HP;
+            ui.add(egui::ProgressBar::new(fraction).text(format!(
+                "Opponent HP: {:.0} / {:.0}",
+                self.opponent.combat.hp, OPPONENT_MAX_HP
+            )));
+        }
+        let restart = ui.button("Restart arena [R]");
+        if restart.clicked() {
+            restart.surrender_focus();
+            self.restart_arena();
+        }
+        ui.label("WASD / arrows: drive and steer");
+        ui.label("F: fire   Space: jump   , / .: roll");
+        ui.label("R: restart   Esc: quit");
+        ui.separator();
         egui::CollapsingHeader::new("Camera")
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 ui.add(
                     egui::Slider::new(&mut self.cam_config.distance, 1.0..=1000.0)
@@ -829,7 +889,7 @@ impl Game {
                 });
                 ui.add(egui::Slider::new(&mut self.cam_config.fov, 0.5f32..=2.0f32).text("FOV"));
                 ui.add(
-                    egui::Slider::new(&mut self.cam_config.speed, 0.0..=1.0).text("Rotate speed"),
+                    egui::Slider::new(&mut self.cam_config.speed, 0.0..=20.0).text("Follow speed"),
                 );
                 ui.toggle_value(&mut self.is_paused, "Pause");
             });
@@ -844,7 +904,9 @@ impl Game {
                     ui.add(egui::DragValue::new(&mut self.spawn_pos.z));
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Recover").clicked() {
+                    let recover = ui.button("Recover");
+                    if recover.clicked() {
+                        recover.surrender_focus();
                         let transform = self.engine.get_object_transform(
                             self.vehicle.body_handle,
                             blade_engine::Prediction::LastKnown,
@@ -853,7 +915,9 @@ impl Game {
                         let bounds = self.engine.get_object_bounds(self.vehicle.body_handle);
                         self.teleport(pos + glam::Vec3::from(bounds.half) * glam::Vec3::Y);
                     }
-                    if ui.button("Respawn").clicked() {
+                    let respawn = ui.button("Respawn");
+                    if respawn.clicked() {
+                        respawn.surrender_focus();
                         self.teleport(self.spawn_pos);
                     }
                 });
@@ -865,26 +929,6 @@ impl Game {
                 );
             });
 
-        egui::CollapsingHeader::new("Combat")
-            .default_open(true)
-            .show(ui, |ui| {
-                if self.opponent.destroyed {
-                    ui.colored_label(egui::Color32::DARK_GRAY, "Opponent: DESTROYED");
-                } else {
-                    ui.label(format!(
-                        "Opponent HP: {:.0} / {:.0}",
-                        self.opponent.hp, self.opponent.max_hp
-                    ));
-                    let frac = (self.opponent.hp / self.opponent.max_hp).clamp(0.0, 1.0);
-                    ui.add(
-                        egui::ProgressBar::new(frac)
-                            .desired_width(ui.available_width().max(80.0))
-                            .text(format!("{:.0}%", frac * 100.0)),
-                    );
-                }
-                ui.label("F — fire at parked mecho ahead (+Z)");
-            });
-
         self.engine.populate_hud(ui);
     }
 
@@ -894,16 +938,8 @@ impl Game {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            let frame = {
-                let mut frame = egui::Frame::side_top_panel(&egui_ctx.global_style());
-                let mut fill = frame.fill.to_array();
-                for f in fill.iter_mut() {
-                    *f = (*f as u32 * 7 / 8) as u8;
-                }
-                frame.fill =
-                    egui::Color32::from_rgba_premultiplied(fill[0], fill[1], fill[2], fill[3]);
-                frame
-            };
+            let frame = egui::Frame::side_top_panel(&egui_ctx.global_style())
+                .fill(egui::Color32::from_gray(24));
             egui::Panel::right("engine")
                 .frame(frame)
                 .show_inside(egui_ctx, |ui| self.populate_hud(ui));
@@ -923,10 +959,14 @@ impl Game {
             let base_quat_nonorm =
                 glam::Quat::from_xyzw(0.0, projection, 0.0, veh_isometry.orientation.w);
             let validity = base_quat_nonorm.length();
-            let base_quat = base_quat_nonorm / validity;
+            let base_quat = if validity > 1.0e-6 {
+                base_quat_nonorm / validity
+            } else {
+                self.last_camera_base_quat
+            };
 
             let camera_dt = self.last_camera_update.elapsed().as_secs_f32();
-            self.last_physics_update = time::Instant::now();
+            self.last_camera_update = time::Instant::now();
 
             let cc = &self.cam_config;
             let smooth_t = (-camera_dt * cc.speed * validity).exp();
@@ -1006,9 +1046,7 @@ impl winit::application::ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
-    if std::env::var_os("SCREECH_SMOKE").is_some()
-        || std::env::args().any(|a| a == "--smoke")
-    {
+    if std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke") {
         log::info!("Smoke mode: init, render ~{SMOKE_FRAMES} frames, exit 0");
     }
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
