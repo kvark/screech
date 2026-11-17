@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build-smoke:
@@ -23,7 +25,7 @@ jobs:
             mesa-vulkan-drivers \
             vulkan-tools \
             xvfb \
-            libxkbcommon-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 \
             libwayland-dev \
             libx11-xcb-dev \
             libxcb-render0-dev \
@@ -33,12 +35,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Check formatting and unit tests
+        run: |
+          cargo fmt --check
+          cargo test --release --locked
+
       - name: Build (release, locked)
         run: cargo build --release --locked
 
       - name: Smoke under lavapipe + Xvfb
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           RUST_LOG: info
           # Deterministic exit after init + a few frames (see SCREECH_SMOKE / --smoke).
           SCREECH_SMOKE: "1"
@@ -47,4 +53,27 @@ jobs:
           # physics, renders a few frames (including one projectile spawn), then exits 0.
           # A bare game-loop run would need `timeout` and treat 124 as success; smoke
           # makes CI exit deterministic instead.
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          test -n "$VK_ICD_FILENAMES"
           xvfb-run -a ./target/release/screech --smoke
+
+  web:
+    name: browser startup tests + WASM bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Browser startup regression tests
+        run: node --test web/boot.test.mjs
+      - name: Install matching wasm-bindgen CLI
+        run: |
+          VERSION=$(awk '/^name = "wasm-bindgen"$/ { found=1; next } found && /^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+      - name: Build browser bundle
+        run: ./scripts/build-web.sh

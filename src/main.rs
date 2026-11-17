@@ -1,7 +1,17 @@
+#[cfg(all(target_arch = "wasm32", not(gles)))]
+compile_error!("WASM requires --cfg gles; use .cargo/config.toml or scripts/build-web.sh");
+
+mod assets;
 mod combat;
 mod config;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
-use std::{f32::consts, fs, mem, ops, path::PathBuf, time};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time;
+use std::{f32::consts, mem, ops, path::PathBuf};
+#[cfg(target_arch = "wasm32")]
+use web_time as time;
 
 #[derive(Clone)]
 struct Wheel {
@@ -105,6 +115,8 @@ struct Game {
     spawn_pos: glam::Vec3,
     /// When set, decrement each redraw and quit at 0 (CI / lavapipe smoke).
     smoke_frames_left: Option<u32>,
+    #[cfg(target_arch = "wasm32")]
+    web_ready: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +174,11 @@ impl Game {
         let window_attributes =
             winit::window::Window::default_attributes().with_title("Rusted-Metal");
 
+        #[cfg(target_arch = "wasm32")]
+        let window_attributes = web::window_attributes(window_attributes);
         let window = event_loop.create_window(window_attributes).unwrap();
+        #[cfg(target_arch = "wasm32")]
+        web::sync_canvas(&window);
 
         let cam_config = config::Camera {
             distance: 5.0,
@@ -178,6 +194,9 @@ impl Game {
         // WGSL sources ship inside blade-render; no need to vendor under data/shaders.
         let shader_path = blade_render::shader_dir();
         // Lavapipe has no ray-query; default to raster. Set SCREECH_RT=1 for RayTracer.
+        #[cfg(target_arch = "wasm32")]
+        let render_backend = blade_engine::config::RenderBackend::Rasterizer;
+        #[cfg(not(target_arch = "wasm32"))]
         let render_backend = if std::env::var_os("SCREECH_RT").is_some() {
             blade_engine::config::RenderBackend::RayTracer
         } else {
@@ -197,7 +216,7 @@ impl Game {
         );
 
         let lev_config: config::Level = ron::de::from_bytes(
-            &fs::read(data_path.join("level.ron")).expect("Unable to open the level config"),
+            &assets::read(&data_path.join("level.ron")).expect("Unable to open the level config"),
         )
         .expect("Unable to parse the level config");
         engine.set_environment_map(&lev_config.environment);
@@ -211,7 +230,8 @@ impl Game {
         );
 
         let veh_config: config::Vehicle = ron::de::from_bytes(
-            &fs::read(data_path.join("raceFuture.ron")).expect("Unable to open the vehicle config"),
+            &assets::read(&data_path.join("raceFuture.ron"))
+                .expect("Unable to open the vehicle config"),
         )
         .expect("Unable to parse the vehicle config");
         let body_config = blade_engine::config::Object {
@@ -415,8 +435,7 @@ impl Game {
         let egui_state =
             egui_winit::State::new(egui_context, egui_viewport_id, &window, None, None, None);
 
-        let smoke =
-            std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke");
+        let smoke = smoke_enabled();
 
         Self {
             engine,
@@ -434,6 +453,8 @@ impl Game {
             cam_config,
             spawn_pos,
             smoke_frames_left: smoke.then_some(SMOKE_FRAMES),
+            #[cfg(target_arch = "wasm32")]
+            web_ready: false,
         }
     }
 
@@ -824,8 +845,7 @@ impl Game {
                 }
 
                 return Ok(
-                    if let Some(repaint_after_instant) = std::time::Instant::now().checked_add(wait)
-                    {
+                    if let Some(repaint_after_instant) = time::Instant::now().checked_add(wait) {
                         winit::event_loop::ControlFlow::WaitUntil(repaint_after_instant)
                     } else {
                         winit::event_loop::ControlFlow::Wait
@@ -933,6 +953,8 @@ impl Game {
     }
 
     fn on_draw(&mut self) -> time::Duration {
+        #[cfg(target_arch = "wasm32")]
+        web::sync_canvas(&self.window);
         self.update_time();
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
@@ -1007,6 +1029,12 @@ impl Game {
             self.window.scale_factor() as f32,
         );
 
+        #[cfg(target_arch = "wasm32")]
+        if !self.web_ready {
+            self.web_ready = true;
+            web::dispatch("screech-ready");
+        }
+
         egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
     }
 }
@@ -1016,8 +1044,15 @@ struct App {
 }
 
 impl winit::application::ApplicationHandler for App {
+    #[cfg(target_arch = "wasm32")]
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        web::dispatch("screech-exit");
+    }
+
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.game = Some(Game::new(event_loop));
+        if self.game.is_none() {
+            self.game = Some(Game::new(event_loop));
+        }
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -1044,12 +1079,35 @@ impl winit::application::ApplicationHandler for App {
     }
 }
 
+fn smoke_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke")
+    }
+}
+
 fn main() {
+    #[cfg(target_arch = "wasm32")]
+    web::initialize();
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
-    if std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke") {
+    if smoke_enabled() {
         log::info!("Smoke mode: init, render ~{SMOKE_FRAMES} frames, exit 0");
     }
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    let mut app = App { game: None };
-    event_loop.run_app(&mut app).unwrap();
+    let app = App { game: None };
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys as _;
+        event_loop.spawn_app(app);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut app = app;
+        event_loop.run_app(&mut app).unwrap();
+    }
 }

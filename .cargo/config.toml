@@ -1,0 +1,3 @@
+# Blade's WebGL shader/pipeline paths also depend on cfg(gles).
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "gles"]
