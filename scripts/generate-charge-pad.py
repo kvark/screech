@@ -40,6 +40,9 @@ def boxes(name, color, glow, shapes):
                     uv.append(((u+1)/2,(v+1)/2))
                 order = (0,1,2,0,2,3) if sign > 0 else (0,2,1,0,3,2)
                 idx.extend((start+i,) for i in order)
+    emit(name, color, glow, p, n, uv, idx)
+
+def emit(name, color, glow, p, n, uv, idx):
     material = len(doc["materials"])
     doc["materials"].append(dict(name=name, emissiveFactor=glow,
         pbrMetallicRoughness=dict(baseColorFactor=color+[1], metallicFactor=0.25, roughnessFactor=0.6)))
@@ -51,8 +54,31 @@ boxes("graphite housing",[.08,.11,.14],[0,0,0],[((0,.05,0),(3.25,.1,3.25))])
 boxes("cyan running lights",[.04,.8,.92],[.03,.6,.8],
       [((x,.13,0),(.14,.06,3.10)) for x in (-1.48,1.48)] +
       [((0,.13,z),(2.82,.06,.14)) for z in (-1.48,1.48)])
-boxes("amber plus",[1,.55,.07],[.9,.3,.012],
-      [((0,.14,0),(.36,.08,1.65)), ((-.49,.14,0),(.61,.08,.36)), ((.49,.14,0),(.61,.08,.36))])
+def chevrons():
+    # Twin arrows toward +Z. Separate faces keep their edges crisp under lighting.
+    pts = [(-.65,-.20), (0,.35), (.65,-.20), (.65,-.53), (0,0), (-.65,-.53)]
+    p, n, uv, idx = [], [], [], []
+    triangles = (0,1,4, 0,4,5, 1,2,3, 1,3,4)
+    for shift in (-.36,.57):
+        for y, sign in ((.18,1),(.1,-1)):
+            base = len(p)
+            p.extend((x,y,z+shift) for x,z in pts)
+            n.extend([(0,sign,0)]*6)
+            uv.extend((x/.65*.5+.5,z+.55) for x,z in pts)
+            oriented = triangles if sign > 0 else triangles[::-1]
+            idx.extend((base+i,) for i in oriented)
+        for i, (x,z) in enumerate(pts):
+            xx, zz = pts[(i+1)%6]
+            dx, dz = xx-x, zz-z
+            length = (dx*dx+dz*dz)**.5
+            base = len(p)
+            p.extend(((x,.1,z+shift),(xx,.1,zz+shift),(xx,.18,zz+shift),(x,.18,z+shift)))
+            n.extend([(-dz/length,0,dx/length)]*4)
+            uv.extend(((0,0),(1,0),(1,1),(0,1)))
+            idx.extend((base+i,) for i in (0,1,2,0,2,3))
+    emit("amber overcharge chevrons",[1,.55,.07],[.9,.3,.012],p,n,uv,idx)
+
+chevrons()
 doc["buffers"].append(dict(byteLength=len(data), uri="data:application/octet-stream;base64,"+
                                 base64.b64encode(data).decode("ascii")))
 Path(__file__).resolve().parents[1].joinpath("data/charge-pad.gltf").write_text(json.dumps(doc, separators=(",",":"))+"\n")
