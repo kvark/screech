@@ -21,6 +21,7 @@ struct Vehicle {
 struct Projectile {
     handle: blade_engine::ObjectHandle,
     age: f32,
+    damage: f32,
 }
 
 /// Parked dummy mecho across the arena — HP drops when projectiles hit it.
@@ -36,6 +37,7 @@ const PROJECTILE_RADIUS: f32 = 0.18;
 use combat::{MAX_HP as OPPONENT_MAX_HP, PROJECTILE_DAMAGE};
 /// Ahead of default spawn (+Z) so the smoke F-fire can reach it.
 const OPPONENT_SPAWN: [f32; 3] = [0.0, 2.0, 8.0];
+const CHARGE_PAD: [f32; 3] = [-4.0, 1.01, 4.0];
 const SMOKE_FRAMES: u32 = 90;
 
 fn projectile_object_config() -> blade_engine::config::Object {
@@ -101,6 +103,8 @@ struct Game {
     vehicle: Vehicle,
     opponent: Opponent,
     projectiles: Vec<Projectile>,
+    charge: combat::ChargePad,
+    charge_pad_visual: Option<blade_engine::ObjectHandle>,
     cam_config: config::Camera,
     spawn_pos: glam::Vec3,
     /// When set, decrement each redraw and quit at 0 (CI / lavapipe smoke).
@@ -418,6 +422,8 @@ impl Game {
         let smoke =
             std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke");
 
+        let charge_pad_visual = Some(Self::spawn_charge_pad(&mut engine));
+
         Self {
             engine,
             last_physics_update: time::Instant::now(),
@@ -431,6 +437,8 @@ impl Game {
             vehicle,
             opponent,
             projectiles: Vec::new(),
+            charge: combat::ChargePad::default(),
+            charge_pad_visual,
             cam_config,
             spawn_pos,
             smoke_frames_left: smoke.then_some(SMOKE_FRAMES),
@@ -496,6 +504,44 @@ impl Game {
         self.vehicle.wheels = wheels;
     }
 
+    fn spawn_charge_pad(engine: &mut blade_engine::Engine) -> blade_engine::ObjectHandle {
+        let config = blade_engine::config::Object {
+            name: "charge-pad".to_string(),
+            visuals: vec![blade_engine::config::Visual {
+                model: "charge-pad.gltf".to_string(),
+                ..Default::default()
+            }],
+            colliders: Vec::new(),
+            additional_mass: None,
+        };
+        engine.add_object(
+            &config,
+            blade_engine::Transform {
+                position: CHARGE_PAD.into(),
+                ..Default::default()
+            },
+            blade_engine::DynamicInput::Empty,
+        )
+    }
+
+    fn update_charge_pad(&mut self) {
+        if self.opponent.combat.destroyed() {
+            return;
+        }
+        let car = self.engine.get_object_transform(
+            self.vehicle.body_handle,
+            blade_engine::Prediction::LastKnown,
+        );
+        let car = glam::Vec3::from(car.position);
+        let offset = car - glam::Vec3::from(CHARGE_PAD);
+        if self.charge.collect(offset.x, offset.y, offset.z) {
+            if let Some(handle) = self.charge_pad_visual.take() {
+                self.engine.remove_object(handle);
+            }
+            log::info!("Overcharge collected: the next projectile deals double damage");
+        }
+    }
+
     fn restart_arena(&mut self) {
         self.set_velocity(0.0);
         self.set_steering(0.0);
@@ -504,6 +550,10 @@ impl Game {
         }
         self.engine.drain_contacts().for_each(drop);
         self.opponent.combat.reset();
+        self.charge = combat::ChargePad::default();
+        if self.charge_pad_visual.is_none() {
+            self.charge_pad_visual = Some(Self::spawn_charge_pad(&mut self.engine));
+        }
         self.engine
             .set_color_tint(self.opponent.handle, [0.95, 0.25, 0.2, 1.0]);
         self.teleport(self.spawn_pos);
@@ -541,7 +591,12 @@ impl Game {
         self.engine
             .set_velocity(handle, velocity.into(), [0.0; 3].into());
 
-        self.projectiles.push(Projectile { handle, age: 0.0 });
+        let damage = self.charge.next_damage();
+        self.projectiles.push(Projectile {
+            handle,
+            age: 0.0,
+            damage,
+        });
         log::info!("Fired projectile {:?}", handle);
     }
 
@@ -577,7 +632,11 @@ impl Game {
         self.engine
             .set_velocity(handle, velocity.into(), [0.0; 3].into());
 
-        self.projectiles.push(Projectile { handle, age: 0.0 });
+        self.projectiles.push(Projectile {
+            handle,
+            age: 0.0,
+            damage: PROJECTILE_DAMAGE,
+        });
         log::info!("Fired projectile toward {:?} {:?}", target, handle);
     }
 
@@ -647,8 +706,13 @@ impl Game {
 
         if !damaged_by.is_empty() {
             // One damage tick per projectile that connected this frame.
-            let hits = damaged_by.len() as f32;
-            self.apply_opponent_damage(PROJECTILE_DAMAGE * hits);
+            let damage = self
+                .projectiles
+                .iter()
+                .filter(|p| damaged_by.binary_search(&p.handle).is_ok())
+                .map(|p| p.damage)
+                .sum();
+            self.apply_opponent_damage(damage);
         }
 
         let mut i = 0;
@@ -672,6 +736,7 @@ impl Game {
             //self.align_wheels();
             self.engine.update(engine_dt);
             self.update_projectiles(engine_dt);
+            self.update_charge_pad();
         }
     }
 
@@ -845,6 +910,16 @@ impl Game {
             ui.label("Arena cleared. Restart for another round.");
         } else {
             ui.label("Destroy the parked opponent ahead.");
+            if self.charge.armed() {
+                ui.colored_label(
+                    egui::Color32::LIGHT_BLUE,
+                    "OVERCHARGE READY: next shot deals 50",
+                );
+            } else if self.charge.available() {
+                ui.label("Drive over the cyan pad left of the target for a double-damage shot.");
+            } else {
+                ui.label("Overcharge spent. Standard shots deal 25.");
+            }
             let fraction = self.opponent.combat.hp / OPPONENT_MAX_HP;
             ui.add(egui::ProgressBar::new(fraction).text(format!(
                 "Opponent HP: {:.0} / {:.0}",
