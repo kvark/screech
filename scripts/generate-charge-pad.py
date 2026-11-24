@@ -49,8 +49,8 @@ def boxes(name, color, glow, shapes):
 
 boxes("graphite housing",[.08,.11,.14],[0,0,0],[((0,.05,0),(3.25,.1,3.25))])
 boxes("cyan running lights",[.04,.8,.92],[.03,.6,.8],
-      [((x,.13,0),(.14,.06,3.0)) for x in (-1.48,1.48)] +
-      [((0,.13,z),(3.0,.06,.14)) for z in (-1.48,1.48)])
+      [((x,.13,0),(.14,.06,3.10)) for x in (-1.48,1.48)] +
+      [((0,.13,z),(2.82,.06,.14)) for z in (-1.48,1.48)])
 boxes("amber plus",[1,.55,.07],[.9,.3,.012],
       [((0,.14,0),(.36,.08,1.65)), ((-.49,.14,0),(.61,.08,.36)), ((.49,.14,0),(.61,.08,.36))])
 doc["buffers"].append(dict(byteLength=len(data), uri="data:application/octet-stream;base64,"+
