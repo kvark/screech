@@ -52,11 +52,11 @@ fn default_light_dir() -> [f32; 3] {
 }
 
 fn default_light_color() -> [f32; 3] {
-    [1.8, 1.7, 1.5]
+    [1.5, 1.4, 1.2]
 }
 
 fn default_ambient_color() -> [f32; 3] {
-    [0.28, 0.36, 0.52]
+    [0.22, 0.23, 0.26]
 }
 
 #[derive(serde::Deserialize)]

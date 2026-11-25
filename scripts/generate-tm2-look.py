@@ -2,7 +2,7 @@
 """Generate the original TM2-look arena assets: HDR sky, walls, landmark tower.
 
 No imported artwork. The equirect sky is authored in pre-tonemap linear values
-so Blade's raster Reinhard operator still reads as a saturated arcade blue.
+so Blade's raster Reinhard operator and sRGB surface encode still read as a saturated arcade blue.
 """
 from __future__ import annotations
 
@@ -203,8 +203,9 @@ def build_walls():
     # Short enough that the spawn camera still sees the sky above them, tall
     # enough to read from across the arena. Base sits on the ground (y=1).
     # Per-side heights. The far (+Z) wall is shorter so the default spawn
-    # camera, which looks slightly down, still shows sky behind the tower.
-    heights = {"+z": 3.2, "-z": 5.0, "+x": 5.0, "-x": 5.0}
+    # camera can see the tower silhouetted against the sky. The far wall is
+    # a low parapet; the other three sides stay taller.
+    heights = {"+z": 2.0, "-z": 5.0, "+x": 5.0, "-x": 5.0}
     thick = 1.2
     length = 42.4
     radius = 21.0
@@ -289,6 +290,17 @@ def inv_reinhard(c: float) -> float:
     return c / (1.0 - c)
 
 
+def srgb_to_linear(c: float) -> float:
+    c = min(max(c, 0.0), 1.0)
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def display_to_hdr(rgb255):
+    """Author HDR values that survive Reinhard + sRGB encode as this display color."""
+    lin = tuple(srgb_to_linear(c / 255.0) for c in rgb255)
+    return tuple(inv_reinhard(c) for c in lin)
+
+
 def hash2(x: int, y: int) -> float:
     n = math.sin(x * 127.1 + y * 311.7) * 43758.5453
     return n - math.floor(n)
@@ -370,8 +382,11 @@ def write_hdr(path: Path, width: int, height: int, pixels: list[tuple[float, flo
         f"-Y {height} +X {width}\n"
     ).encode("ascii")
     body = bytearray()
-    # Radiance -Y means first scanline is the top of the image (v=1, zenith).
-    for y in range(height - 1, -1, -1):
+    # zune_hdr writes scanlines to the GPU texture in file order, and
+    # Blade's map_equirect_dir_to_uv uses v=0 at -Y (ground) / v=1 at +Y
+    # (zenith). The first HDR scanline is therefore uv.y=0 = ground, not
+    # the conventional Radiance "top of image = zenith".
+    for y in range(height):
         row = [float_to_rgbe(pixels[y * width + x]) for x in range(width)]
         body.extend((2, 2, (width >> 8) & 0xFF, width & 0xFF))
         for channel in range(4):
@@ -382,51 +397,74 @@ def write_hdr(path: Path, width: int, height: int, pixels: list[tuple[float, flo
 
 def sky_color(u: float, v: float) -> tuple[float, float, float]:
     # Match blade-render map_equirect_dir_to_uv: v=0 down, v=0.5 horizon, v=1 zenith.
+    # The spawn chase camera only sees a band just above the horizon (about
+    # v=0.50–0.65), so that band must already be deep blue with puffy clouds.
     yaw = (u * 2.0 - 1.0) * math.pi
     pitch = (v - 0.5) * math.pi
     cy, sy = math.cos(pitch), math.sin(pitch)
     direction = (cy * math.sin(yaw), sy, cy * math.cos(yaw))
 
-    zenith = tuple(inv_reinhard(c) for c in (0.16, 0.42, 0.92))
-    mid = tuple(inv_reinhard(c) for c in (0.32, 0.60, 0.94))
-    horizon = tuple(inv_reinhard(c) for c in (0.48, 0.70, 0.94))
-    ground = tuple(inv_reinhard(c) for c in (0.46, 0.50, 0.44))
-    cloud_lit = tuple(inv_reinhard(c) for c in (0.94, 0.95, 0.98))
-    cloud_shade = tuple(inv_reinhard(c) for c in (0.78, 0.84, 0.94))
+    # Display sRGB targets: deep zenith blue, cyan horizon, white puffs.
+    zenith = display_to_hdr((28, 92, 210))
+    mid = display_to_hdr((48, 130, 228))
+    horizon = display_to_hdr((110, 186, 236))
+    ground = display_to_hdr((92, 96, 88))
+    cloud_lit = display_to_hdr((250, 252, 255))
+    cloud_shade = display_to_hdr((188, 210, 236))
 
     if v < 0.5:
         t = max(0.0, v / 0.5)
-        # Tighten the blend near the horizon so the ground doesn't muddy the sky.
         t = t * t * (3 - 2 * t)
         color = lerp3(ground, horizon, t)
     else:
+        # Reach mid/deep blue within a few degrees of the horizon so the
+        # spawn view is already a saturated arcade sky, not a pale wash.
         t = (v - 0.5) / 0.5
-        color = lerp3(horizon, mid, min(1.0, t * 1.4)) if t < 0.55 else lerp3(mid, zenith, (t - 0.55) / 0.45)
+        if t < 0.10:
+            color = lerp3(horizon, mid, t / 0.10)
+        else:
+            color = lerp3(mid, zenith, min(1.0, (t - 0.10) / 0.90))
 
-    # Soft cumulus in mid-to-upper sky, computed in yaw/altitude so they stay chunky.
-    if 0.48 < v < 0.92:
-        # Two noise layers at different scales; warp by yaw for drifting rows.
-        nx = yaw * 1.15
-        ny = (v - 0.5) * 6.5
-        n = fbm(nx + 2.0, ny * 1.4, 5)
-        n2 = fbm(nx * 0.45 + 8.0, ny * 0.7 + 3.0, 4)
-        # Density peaks around mid-sky, thins at zenith (Paris-style scattered clouds).
-        altitude_window = math.sin((v - 0.48) / (0.92 - 0.48) * math.pi) ** 0.85
-        blob = (n * 0.7 + n2 * 0.3 - 0.42) * altitude_window
-        coverage = max(0.0, min(1.0, blob * 1.8))
+    # Chunky cumulus, concentrated just above the horizon (in-frame from spawn).
+    if 0.50 < v < 0.80:
+        nx = yaw * 0.95
+        ny = (v - 0.5) * 16.0
+        n = fbm(nx + 2.0, ny * 1.2, 5)
+        n2 = fbm(nx * 0.5 + 8.0, ny * 0.6 + 3.0, 4)
+        # Sparse fbm wisps only; the readable white puffs are placed explicitly.
+        altitude_window = math.exp(-((v - 0.60) / 0.12) ** 2)
+        blob = (n * 0.72 + n2 * 0.28 - 0.66) * altitude_window
+        coverage = max(0.0, min(1.0, blob * 2.2))
         coverage = coverage * coverage * (3 - 2 * coverage)
+        # Puffs sit clearly left and right of +Z (u=0.5) so the tower
+        # silhouettes against blue, with white clouds in-frame on both sides.
+        for pu, pv, ru, rv, dens in (
+            (0.36, 0.575, 0.055, 0.038, 1.0),
+            (0.64, 0.570, 0.06, 0.040, 1.0),
+            (0.32, 0.655, 0.048, 0.036, 0.95),
+            (0.68, 0.650, 0.05, 0.036, 0.95),
+        ):
+            du = (u - pu) / ru
+            dv = (v - pv) / rv
+            # Wrap u so puffs aren't cut at the 0/1 seam.
+            du = min(abs(du), abs((u - pu + 1) / ru), abs((u - pu - 1) / ru))
+            d = du * du + dv * dv
+            if d < 1.0:
+                edge = (1.0 - d) ** 2
+                wobble = 0.75 + 0.25 * n2
+                coverage = max(coverage, min(1.0, dens * edge * wobble))
         if coverage > 0.0:
-            shade = max(0.0, min(1.0, (n2 - 0.35) * 1.6))
+            shade = max(0.0, min(1.0, (n2 - 0.3) * 1.5))
             cloud = lerp3(cloud_shade, cloud_lit, shade)
             color = lerp3(color, cloud, coverage)
 
-    # Soft sun glow matching RasterConfig light_dir (towards the light).
-    light = (0.35, 1.0, 0.25)
+    # Tight sun disc off to +X / slightly -Z, out of the default spawn view.
+    light = (0.85, 0.55, -0.2)
     llen = math.sqrt(sum(c * c for c in light))
     light = tuple(c / llen for c in light)
     mu = max(0.0, direction[0] * light[0] + direction[1] * light[1] + direction[2] * light[2])
-    sun = mu ** 80 * 20.0 + mu ** 16 * 1.6
-    color = (color[0] + sun * 1.15, color[1] + sun * 1.0, color[2] + sun * 0.7)
+    sun = mu ** 160 * 12.0 + mu ** 48 * 0.25
+    color = (color[0] + sun * 1.1, color[1] + sun * 0.95, color[2] + sun * 0.55)
     return color
 
 
@@ -435,8 +473,105 @@ def build_sky(width: int = 1024, height: int = 512):
     write_hdr(DATA / "tm2-sky.hdr", width, height, pixels)
 
 
+# ---------------------------------------------------------------------------
+# Warm asphalt plaza overlay (covers the pale kit ground)
+# ---------------------------------------------------------------------------
+
+def build_plaza(size: int = 512):
+    from PIL import Image
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    # Light warm asphalt; raster lighting + Reinhard crush dark albedos.
+    asphalt = (210, 184, 158)
+    grit_hi = (228, 204, 176)
+    grit_lo = (188, 162, 136)
+    joint = (246, 226, 196)
+    tiles = 8
+    tile = size // tiles
+    joint_w = 2
+    for y in range(size):
+        for x in range(size):
+            n = value_noise(x / 18.0, y / 18.0)
+            n2 = value_noise(x / 6.0 + 4.0, y / 6.0)
+            mix = 0.6 * n + 0.4 * n2
+            if mix > 0.55:
+                base = grit_hi
+            elif mix < 0.35:
+                base = grit_lo
+            else:
+                base = asphalt
+            # Subtle variation
+            jitter = int((hash2(x, y) - 0.5) * 10)
+            r = max(0, min(255, base[0] + jitter))
+            g = max(0, min(255, base[1] + jitter))
+            b = max(0, min(255, base[2] + jitter))
+            # Tile joints
+            lx = x % tile
+            ly = y % tile
+            if lx < joint_w or ly < joint_w or lx >= tile - joint_w or ly >= tile - joint_w:
+                r, g, b = joint
+            px[x, y] = (r, g, b)
+    png = DATA / "arena-plaza.png"
+    img.save(png, optimize=True)
+    print("wrote", png)
+
+    # A 40x40 y-up quad, UVs tiled 8x so the grid reads from spawn.
+    doc = new_doc("Screech TM2 plaza")
+    blob = bytearray()
+    half = 20.0
+    positions = [(-half, 0.0, -half), (half, 0.0, -half), (half, 0.0, half), (-half, 0.0, half)]
+    normals = [(0.0, 1.0, 0.0)] * 4
+    uvs = [(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]
+    indices = [(0,), (1,), (2,), (0,), (2,), (3,)]
+
+    def acc(values, packing, kind, bounds=False):
+        while len(blob) % 4:
+            blob.append(0)
+        start = len(blob)
+        for value in values:
+            blob.extend(struct.pack("<" + packing, *value))
+        view = len(doc["bufferViews"])
+        doc["bufferViews"].append(dict(buffer=0, byteOffset=start, byteLength=len(blob) - start))
+        item = dict(
+            bufferView=view,
+            componentType=5123 if packing == "H" else 5126,
+            count=len(values),
+            type=kind,
+        )
+        if bounds:
+            item.update(min=list(map(min, zip(*values))), max=list(map(max, zip(*values))))
+        doc["accessors"].append(item)
+        return len(doc["accessors"]) - 1
+
+    doc["images"] = [dict(uri="arena-plaza.png", mimeType="image/png", name="plaza")]
+    doc["samplers"] = [dict(magFilter=9728, minFilter=9728, wrapS=10497, wrapT=10497)]  # nearest, repeat
+    doc["textures"] = [dict(sampler=0, source=0)]
+    doc["materials"].append(dict(
+        name="warm asphalt",
+        emissiveFactor=[0.28, 0.22, 0.16],
+        pbrMetallicRoughness=dict(
+            baseColorTexture=dict(index=0),
+            baseColorFactor=[1, 1, 1, 1],
+            metallicFactor=0.0,
+            roughnessFactor=0.95,
+        ),
+    ))
+    doc["meshes"][0]["primitives"].append(dict(
+        material=0,
+        indices=acc(indices, "H", "SCALAR"),
+        attributes=dict(
+            POSITION=acc(positions, "3f", "VEC3", True),
+            NORMAL=acc(normals, "3f", "VEC3"),
+            TEXCOORD_0=acc(uvs, "2f", "VEC2"),
+        ),
+    ))
+    write_gltf(doc, blob, DATA / "arena-plaza.gltf")
+    print("wrote", DATA / "arena-plaza.gltf")
+
+
 if __name__ == "__main__":
     DATA.mkdir(exist_ok=True)
     build_tower()
     build_walls()
+    build_plaza()
     build_sky()

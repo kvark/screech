@@ -125,6 +125,8 @@ struct Game {
     smoke_frames_left: Option<u32>,
     /// When set (and smoke is not), settle then exit so a wrapper can grab the frame.
     screenshot_frames_left: Option<u32>,
+    /// Hide the engine debug side panel; keep combat HUD lines only.
+    screenshot_mode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,13 +196,16 @@ impl Game {
 
         let window = event_loop.create_window(window_attributes).unwrap();
 
+        // Further back and a bit higher, looking ahead of the car so the
+        // horizon sits in the upper third and the landmark fits against the sky.
+        // Combat aiming is independent of the chase camera.
         let cam_config = config::Camera {
-            distance: 5.0,
+            distance: 16.0,
             azimuth: 0.0,
-            altitude: 0.5,
+            altitude: 0.20,
             speed: 8.0,
-            target: [0.0, 1.0, 0.0],
-            fov: 1.0,
+            target: [0.0, 2.6, 5.5],
+            fov: 1.1,
         };
 
         // Resolve assets relative to the crate root so `cargo run` works from any cwd.
@@ -480,6 +485,7 @@ impl Game {
             } else {
                 screenshot.as_ref().map(|_| SCREENSHOT_FRAMES)
             },
+            screenshot_mode: screenshot.is_some() && !smoke,
         }
     }
 
@@ -948,7 +954,7 @@ impl Game {
         Ok(winit::event_loop::ControlFlow::Poll)
     }
 
-    fn populate_hud(&mut self, ui: &mut egui::Ui) {
+    fn populate_combat_hud(&mut self, ui: &mut egui::Ui) {
         ui.heading("SCREECH");
         if self.opponent.combat.destroyed() {
             ui.colored_label(egui::Color32::LIGHT_GREEN, "TARGET DESTROYED");
@@ -979,6 +985,10 @@ impl Game {
         ui.label("WASD / arrows: drive and steer");
         ui.label("F: fire   Space: jump   , / .: roll");
         ui.label("R: restart   Esc: quit");
+    }
+
+    fn populate_hud(&mut self, ui: &mut egui::Ui) {
+        self.populate_combat_hud(ui);
         ui.separator();
         egui::CollapsingHeader::new("Camera")
             .default_open(false)
@@ -1057,12 +1067,31 @@ impl Game {
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
+        let screenshot_mode = self.screenshot_mode;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            let frame = egui::Frame::side_top_panel(&egui_ctx.global_style())
-                .fill(egui::Color32::from_gray(24));
-            egui::Panel::right("engine")
-                .frame(frame)
-                .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+            if screenshot_mode {
+                // Combat HUD only: the Camera / Dynamics / Objects debug
+                // side panel would hide the arena in the official shots.
+                egui::Area::new(egui::Id::new("combat-hud"))
+                    .fixed_pos(egui::pos2(16.0, 16.0))
+                    .order(egui::Order::Foreground)
+                    .show(egui_ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgba_unmultiplied(16, 16, 20, 200))
+                            .inner_margin(egui::Margin::same(10))
+                            .corner_radius(6.0)
+                            .show(ui, |ui| {
+                                ui.set_max_width(380.0);
+                                self.populate_combat_hud(ui);
+                            });
+                    });
+            } else {
+                let frame = egui::Frame::side_top_panel(&egui_ctx.global_style())
+                    .fill(egui::Color32::from_gray(24));
+                egui::Panel::right("engine")
+                    .frame(frame)
+                    .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+            }
         });
 
         self.egui_state
