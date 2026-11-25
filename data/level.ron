@@ -1,7 +1,10 @@
 (
-    environment: "",
+    environment: "tm2-sky.hdr",
     gravity: 9.81,
-    average_luminocity: 0.1,
+    average_luminocity: 1.0,
+    light_dir: (0.35, 1.0, 0.25),
+    light_color: (1.5, 1.4, 1.2),
+    ambient_color: (0.22, 0.23, 0.26),
     spawn_pos: (0, 2, 0),
     ground: (
         name: "ground",
@@ -9,6 +12,27 @@
             (
                 model: "ground.gltf",
                 pos: (0, 1, 0),
+            ),
+            (
+                // Warm asphalt overlay so the pale kit ground doesn't wash out.
+                model: "arena-plaza.gltf",
+                pos: (0, 1.02, 0),
+            ),
+            (
+                model: "arena-walls.gltf",
+            ),
+            (
+                // Visual-only monument past the parked target. Scale keeps the
+                // wide base readable; the official screenshot camera frames
+                // the full silhouette. No collider.
+                model: "landmark-tower.gltf",
+                pos: (0, 1, 16.5),
+                scale: 0.7,
+            ),
+            (
+                // Planters and rooftop vents, off the fire lane and pad.
+                model: "arena-props.gltf",
+                pos: (0, 1.02, 0),
             ),
         ],
         colliders: [

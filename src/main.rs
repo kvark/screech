@@ -39,6 +39,59 @@ use combat::{MAX_HP as OPPONENT_MAX_HP, PROJECTILE_DAMAGE};
 const OPPONENT_SPAWN: [f32; 3] = [0.0, 2.0, 8.0];
 const CHARGE_PAD: [f32; 3] = [-4.0, 1.01, 4.0];
 const SMOKE_FRAMES: u32 = 90;
+/// Settle frames for `--screenshot` / `--screenshot-play` (no combat).
+const SCREENSHOT_FRAMES: u32 = 120;
+const SCREENSHOT_WIDTH: u32 = 1280;
+const SCREENSHOT_HEIGHT: u32 = 720;
+
+/// Play chase camera. Combat aiming is independent of this.
+fn play_camera() -> config::Camera {
+    config::Camera {
+        distance: 8.0,
+        azimuth: 0.0,
+        altitude: 0.35,
+        speed: 8.0,
+        target: [0.0, 1.4, 2.0],
+        fov: 1.0,
+    }
+}
+
+/// Pulled back so official after shots show the full landmark against the sky.
+fn official_screenshot_camera() -> config::Camera {
+    config::Camera {
+        distance: 22.0,
+        azimuth: 0.0,
+        altitude: 0.12,
+        speed: 8.0,
+        target: [0.0, 2.8, 6.0],
+        fov: 1.25,
+    }
+}
+
+struct ScreenshotRequest {
+    path: PathBuf,
+    /// When true, use `official_screenshot_camera`; otherwise the play chase.
+    official: bool,
+}
+
+fn screenshot_arg() -> Option<ScreenshotRequest> {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if arg == "--screenshot" {
+            return args.next().map(|path| ScreenshotRequest {
+                path: PathBuf::from(path),
+                official: true,
+            });
+        }
+        if arg == "--screenshot-play" {
+            return args.next().map(|path| ScreenshotRequest {
+                path: PathBuf::from(path),
+                official: false,
+            });
+        }
+    }
+    None
+}
 
 fn projectile_object_config() -> blade_engine::config::Object {
     blade_engine::config::Object {
@@ -109,6 +162,12 @@ struct Game {
     spawn_pos: glam::Vec3,
     /// When set, decrement each redraw and quit at 0 (CI / lavapipe smoke).
     smoke_frames_left: Option<u32>,
+    /// When set (and smoke is not), settle then exit so a wrapper can grab the frame.
+    screenshot_frames_left: Option<u32>,
+    /// Hide the engine debug side panel; keep combat HUD lines only.
+    screenshot_mode: bool,
+    /// When set, the frame camera uses this instead of `cam_config` (official shots).
+    screenshot_camera: Option<config::Camera>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,19 +222,22 @@ impl Game {
     fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> Self {
         log::info!("Initializing Rusted-Metal (Screech)");
 
-        let window_attributes =
+        let screenshot = screenshot_arg();
+        let mut window_attributes =
             winit::window::Window::default_attributes().with_title("Rusted-Metal");
+        if screenshot.is_some() {
+            window_attributes = window_attributes
+                .with_inner_size(winit::dpi::PhysicalSize::new(
+                    SCREENSHOT_WIDTH,
+                    SCREENSHOT_HEIGHT,
+                ))
+                .with_decorations(false)
+                .with_position(winit::dpi::PhysicalPosition::new(0, 0));
+        }
 
         let window = event_loop.create_window(window_attributes).unwrap();
 
-        let cam_config = config::Camera {
-            distance: 5.0,
-            azimuth: 0.0,
-            altitude: 0.5,
-            speed: 8.0,
-            target: [0.0, 1.0, 0.0],
-            fov: 1.0,
-        };
+        let cam_config = play_camera();
 
         // Resolve assets relative to the crate root so `cargo run` works from any cwd.
         let data_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
@@ -207,6 +269,13 @@ impl Game {
         engine.set_environment_map(&lev_config.environment);
         engine.set_gravity(lev_config.gravity);
         engine.set_average_luminosity(lev_config.average_luminocity);
+        // Rasterizer is the default (lavapipe has no ray-query). Cheerful, flat key + fill.
+        engine.set_raster_config(blade_render::RasterConfig {
+            light_dir: lev_config.light_dir.into(),
+            light_color: lev_config.light_color.into(),
+            ambient_color: lev_config.ambient_color.into(),
+            ..Default::default()
+        });
 
         let ground_handle = engine.add_object(
             &lev_config.ground,
@@ -442,6 +511,16 @@ impl Game {
             cam_config,
             spawn_pos,
             smoke_frames_left: smoke.then_some(SMOKE_FRAMES),
+            screenshot_frames_left: if smoke {
+                None
+            } else {
+                screenshot.as_ref().map(|_| SCREENSHOT_FRAMES)
+            },
+            screenshot_mode: screenshot.is_some() && !smoke,
+            screenshot_camera: screenshot
+                .as_ref()
+                .filter(|req| req.official)
+                .map(|_| official_screenshot_camera()),
         }
     }
 
@@ -887,6 +966,13 @@ impl Game {
                         return Err(QuitEvent);
                     }
                 }
+                if let Some(left) = self.screenshot_frames_left.as_mut() {
+                    *left = left.saturating_sub(1);
+                    if *left == 0 {
+                        log::info!("Screenshot settle complete — exiting");
+                        return Err(QuitEvent);
+                    }
+                }
 
                 return Ok(
                     if let Some(repaint_after_instant) = std::time::Instant::now().checked_add(wait)
@@ -903,7 +989,7 @@ impl Game {
         Ok(winit::event_loop::ControlFlow::Poll)
     }
 
-    fn populate_hud(&mut self, ui: &mut egui::Ui) {
+    fn populate_combat_hud(&mut self, ui: &mut egui::Ui) {
         ui.heading("SCREECH");
         if self.opponent.combat.destroyed() {
             ui.colored_label(egui::Color32::LIGHT_GREEN, "TARGET DESTROYED");
@@ -934,6 +1020,10 @@ impl Game {
         ui.label("WASD / arrows: drive and steer");
         ui.label("F: fire   Space: jump   , / .: roll");
         ui.label("R: restart   Esc: quit");
+    }
+
+    fn populate_hud(&mut self, ui: &mut egui::Ui) {
+        self.populate_combat_hud(ui);
         ui.separator();
         egui::CollapsingHeader::new("Camera")
             .default_open(false)
@@ -1012,12 +1102,31 @@ impl Game {
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
+        let screenshot_mode = self.screenshot_mode;
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            let frame = egui::Frame::side_top_panel(&egui_ctx.global_style())
-                .fill(egui::Color32::from_gray(24));
-            egui::Panel::right("engine")
-                .frame(frame)
-                .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+            if screenshot_mode {
+                // Combat HUD only: the Camera / Dynamics / Objects debug
+                // side panel would hide the arena in the official shots.
+                egui::Area::new(egui::Id::new("combat-hud"))
+                    .fixed_pos(egui::pos2(16.0, 16.0))
+                    .order(egui::Order::Foreground)
+                    .show(egui_ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgba_unmultiplied(16, 16, 20, 200))
+                            .inner_margin(egui::Margin::same(10))
+                            .corner_radius(6.0)
+                            .show(ui, |ui| {
+                                ui.set_max_width(380.0);
+                                self.populate_combat_hud(ui);
+                            });
+                    });
+            } else {
+                let frame = egui::Frame::side_top_panel(&egui_ctx.global_style())
+                    .fill(egui::Color32::from_gray(24));
+                egui::Panel::right("engine")
+                    .frame(frame)
+                    .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+            }
         });
 
         self.egui_state
@@ -1043,7 +1152,7 @@ impl Game {
             let camera_dt = self.last_camera_update.elapsed().as_secs_f32();
             self.last_camera_update = time::Instant::now();
 
-            let cc = &self.cam_config;
+            let cc = self.screenshot_camera.as_ref().unwrap_or(&self.cam_config);
             let smooth_t = (-camera_dt * cc.speed * validity).exp();
             let smooth_quat = base_quat.lerp(self.last_camera_base_quat, smooth_t);
             let base = Isometry {
@@ -1123,6 +1232,17 @@ fn main() {
     env_logger::init();
     if std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke") {
         log::info!("Smoke mode: init, render ~{SMOKE_FRAMES} frames, exit 0");
+    }
+    if let Some(req) = screenshot_arg() {
+        let kind = if req.official {
+            "official camera"
+        } else {
+            "play camera"
+        };
+        log::info!(
+            "Screenshot mode ({kind}): render ~{SCREENSHOT_FRAMES} frames at {SCREENSHOT_WIDTH}x{SCREENSHOT_HEIGHT}, then exit (capture {:?})",
+            req.path
+        );
     }
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
     let mut app = App { game: None };
