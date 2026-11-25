@@ -48,6 +48,8 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 
 Renders a fixed number of settle frames at 1280x720 with decorations off, then exits. Combat is not exercised. Capture the X11/Xvfb framebuffer on the last frames (for example with `ffmpeg -f x11grab`):
 
+`--screenshot` uses a pulled-back camera so the full landmark fits; `--screenshot-play` uses the play chase camera. `scripts/capture-screenshot.sh` wraps either (pass `--play` for the latter).
+
 ```bash
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
   xvfb-run -a -s '-screen 0 1280x720x24' ./target/release/screech --screenshot docs/screenshots/after.png

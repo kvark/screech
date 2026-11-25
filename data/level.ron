@@ -22,11 +22,17 @@
                 model: "arena-walls.gltf",
             ),
             (
-                // Visual-only monument past the parked target, scaled to fit
-                // the spawn camera against the sky.
+                // Visual-only monument past the parked target. Scale keeps the
+                // wide base readable; the official screenshot camera frames
+                // the full silhouette. No collider.
                 model: "landmark-tower.gltf",
                 pos: (0, 1, 16.5),
-                scale: 0.62,
+                scale: 0.7,
+            ),
+            (
+                // Planters and rooftop vents, off the fire lane and pad.
+                model: "arena-props.gltf",
+                pos: (0, 1.02, 0),
             ),
         ],
         colliders: [

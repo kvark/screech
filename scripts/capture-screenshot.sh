@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Capture one 1280x720 spawn-camera frame of a native Screech build under Xvfb.
-# Usage: scripts/capture-screenshot.sh <screech-bin> <out.png>
+# Usage: scripts/capture-screenshot.sh <screech-bin> <out.png> [--play]
 set -euo pipefail
 BIN=${1:?screech binary}
 OUT=${2:?output png}
+FLAG=--screenshot
+if [[ "${3:-}" == "--play" ]]; then FLAG=--screenshot-play; fi
 WIDTH=1280
 HEIGHT=720
 WORK=$(mktemp -d)
@@ -34,7 +36,7 @@ ffmpeg -y -f x11grab -draw_mouse 0 -video_size ${WIDTH}x${HEIGHT} -framerate 15 
 FFMPEG_PID=$!
 sleep 0.3
 
-RUST_LOG=${RUST_LOG:-info} "$BIN" --screenshot "$OUT"
+RUST_LOG=${RUST_LOG:-info} "$BIN" "$FLAG" "$OUT"
 GAME_STATUS=$?
 
 # Flush the encoder, then grab a frame from just before the window disappeared.

@@ -39,16 +39,55 @@ use combat::{MAX_HP as OPPONENT_MAX_HP, PROJECTILE_DAMAGE};
 const OPPONENT_SPAWN: [f32; 3] = [0.0, 2.0, 8.0];
 const CHARGE_PAD: [f32; 3] = [-4.0, 1.01, 4.0];
 const SMOKE_FRAMES: u32 = 90;
-/// Settle frames for `--screenshot` (no combat). Same camera as a parked spawn view.
+/// Settle frames for `--screenshot` / `--screenshot-play` (no combat).
 const SCREENSHOT_FRAMES: u32 = 120;
 const SCREENSHOT_WIDTH: u32 = 1280;
 const SCREENSHOT_HEIGHT: u32 = 720;
 
-fn screenshot_arg() -> Option<PathBuf> {
+/// Play chase camera. Combat aiming is independent of this.
+fn play_camera() -> config::Camera {
+    config::Camera {
+        distance: 8.0,
+        azimuth: 0.0,
+        altitude: 0.35,
+        speed: 8.0,
+        target: [0.0, 1.4, 2.0],
+        fov: 1.0,
+    }
+}
+
+/// Pulled back so official after shots show the full landmark against the sky.
+fn official_screenshot_camera() -> config::Camera {
+    config::Camera {
+        distance: 22.0,
+        azimuth: 0.0,
+        altitude: 0.12,
+        speed: 8.0,
+        target: [0.0, 2.8, 6.0],
+        fov: 1.25,
+    }
+}
+
+struct ScreenshotRequest {
+    path: PathBuf,
+    /// When true, use `official_screenshot_camera`; otherwise the play chase.
+    official: bool,
+}
+
+fn screenshot_arg() -> Option<ScreenshotRequest> {
     let mut args = std::env::args();
     while let Some(arg) = args.next() {
         if arg == "--screenshot" {
-            return args.next().map(PathBuf::from);
+            return args.next().map(|path| ScreenshotRequest {
+                path: PathBuf::from(path),
+                official: true,
+            });
+        }
+        if arg == "--screenshot-play" {
+            return args.next().map(|path| ScreenshotRequest {
+                path: PathBuf::from(path),
+                official: false,
+            });
         }
     }
     None
@@ -127,6 +166,8 @@ struct Game {
     screenshot_frames_left: Option<u32>,
     /// Hide the engine debug side panel; keep combat HUD lines only.
     screenshot_mode: bool,
+    /// When set, the frame camera uses this instead of `cam_config` (official shots).
+    screenshot_camera: Option<config::Camera>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,17 +237,7 @@ impl Game {
 
         let window = event_loop.create_window(window_attributes).unwrap();
 
-        // Further back and a bit higher, looking ahead of the car so the
-        // horizon sits in the upper third and the landmark fits against the sky.
-        // Combat aiming is independent of the chase camera.
-        let cam_config = config::Camera {
-            distance: 16.0,
-            azimuth: 0.0,
-            altitude: 0.20,
-            speed: 8.0,
-            target: [0.0, 2.6, 5.5],
-            fov: 1.1,
-        };
+        let cam_config = play_camera();
 
         // Resolve assets relative to the crate root so `cargo run` works from any cwd.
         let data_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
@@ -486,6 +517,10 @@ impl Game {
                 screenshot.as_ref().map(|_| SCREENSHOT_FRAMES)
             },
             screenshot_mode: screenshot.is_some() && !smoke,
+            screenshot_camera: screenshot
+                .as_ref()
+                .filter(|req| req.official)
+                .map(|_| official_screenshot_camera()),
         }
     }
 
@@ -1117,7 +1152,7 @@ impl Game {
             let camera_dt = self.last_camera_update.elapsed().as_secs_f32();
             self.last_camera_update = time::Instant::now();
 
-            let cc = &self.cam_config;
+            let cc = self.screenshot_camera.as_ref().unwrap_or(&self.cam_config);
             let smooth_t = (-camera_dt * cc.speed * validity).exp();
             let smooth_quat = base_quat.lerp(self.last_camera_base_quat, smooth_t);
             let base = Isometry {
@@ -1198,9 +1233,15 @@ fn main() {
     if std::env::var_os("SCREECH_SMOKE").is_some() || std::env::args().any(|a| a == "--smoke") {
         log::info!("Smoke mode: init, render ~{SMOKE_FRAMES} frames, exit 0");
     }
-    if let Some(path) = screenshot_arg() {
+    if let Some(req) = screenshot_arg() {
+        let kind = if req.official {
+            "official camera"
+        } else {
+            "play camera"
+        };
         log::info!(
-            "Screenshot mode: render ~{SCREENSHOT_FRAMES} frames at {SCREENSHOT_WIDTH}x{SCREENSHOT_HEIGHT}, then exit (capture {path:?})"
+            "Screenshot mode ({kind}): render ~{SCREENSHOT_FRAMES} frames at {SCREENSHOT_WIDTH}x{SCREENSHOT_HEIGHT}, then exit (capture {:?})",
+            req.path
         );
     }
     let event_loop = winit::event_loop::EventLoop::new().unwrap();

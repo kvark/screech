@@ -43,6 +43,46 @@ def write_gltf(doc, blob: bytearray, dest: Path):
     dest.write_text(json.dumps(doc, separators=(",", ":")) + "\n")
 
 
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _norm(a):
+    length = math.sqrt(_dot(a, a)) or 1.0
+    return (a[0] / length, a[1] / length, a[2] / length)
+
+
+def rotate_from_y(vec, direction):
+    """Rotate vec by the rotation that takes +Y to direction."""
+    d = _norm(direction)
+    y = (0.0, 1.0, 0.0)
+    c = _dot(y, d)
+    if c > 0.999999:
+        return vec
+    if c < -0.999999:
+        return (vec[0], -vec[1], -vec[2])
+    axis = _norm(_cross(y, d))
+    s = math.sqrt(max(0.0, 1.0 - c * c))
+    kxv = _cross(axis, vec)
+    kdv = _dot(axis, vec)
+    return (
+        vec[0] * c + kxv[0] * s + axis[0] * kdv * (1.0 - c),
+        vec[1] * c + kxv[1] * s + axis[1] * kdv * (1.0 - c),
+        vec[2] * c + kxv[2] * s + axis[2] * kdv * (1.0 - c),
+    )
+
+
+def mid_and_dir(p0, p1):
+    d = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
+    mid = ((p0[0] + p1[0]) * 0.5, (p0[1] + p1[1]) * 0.5, (p0[2] + p1[2]) * 0.5)
+    length = math.sqrt(_dot(d, d))
+    return mid, length, d
+
 def make_accessors(doc, blob: bytearray):
     def accessor(values, packing, kind, bounds=False):
         while len(blob) % 4:
@@ -90,17 +130,27 @@ def make_accessors(doc, blob: bytearray):
 
     def boxes(name, color, glow, shapes, metallic=0.2, roughness=0.7):
         p, n, uv, idx = [], [], [], []
-        for center, size in shapes:
+        for shape in shapes:
+            if len(shape) == 2:
+                center, size = shape
+                direction = (0.0, 1.0, 0.0)
+            else:
+                center, size, direction = shape
             for a, b, c in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
                 for sign in (1, -1):
                     start = len(p)
                     for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
-                        vtx = list(center)
-                        vtx[a] += sign * size[a] / 2
-                        vtx[b] += u * size[b] / 2
-                        vtx[c] += v * size[c] / 2
-                        p.append(tuple(vtx))
-                        n.append(tuple(sign if i == a else 0 for i in range(3)))
+                        local = [0.0, 0.0, 0.0]
+                        local[a] += sign * size[a] / 2
+                        local[b] += u * size[b] / 2
+                        local[c] += v * size[c] / 2
+                        vtx = rotate_from_y(tuple(local), direction)
+                        nrm = rotate_from_y(
+                            tuple(float(sign) if i == a else 0.0 for i in range(3)),
+                            direction,
+                        )
+                        p.append((center[0] + vtx[0], center[1] + vtx[1], center[2] + vtx[2]))
+                        n.append(nrm)
                         uv.append(((u + 1) / 2, (v + 1) / 2))
                     order = (0, 1, 2, 0, 2, 3) if sign > 0 else (0, 2, 1, 0, 3, 2)
                     idx.extend((start + i,) for i in order)
@@ -110,7 +160,8 @@ def make_accessors(doc, blob: bytearray):
 
 
 # ---------------------------------------------------------------------------
-# Landmark: chunky low-poly monument tower (original, not a TM2 mesh)
+# Landmark: chunky low-poly monument (original, not a TM2 mesh)
+# Wide splayed four-leg base with arches, tapering lattice, observation decks.
 # Local space, base at y=0 so level.ron can sit it on the ground plane.
 # ---------------------------------------------------------------------------
 
@@ -124,66 +175,109 @@ def build_tower():
     gold = ([0.92, 0.68, 0.18], [0.35, 0.18, 0.02])
     teal = ([0.05, 0.72, 0.78], [0.02, 0.45, 0.5])
 
-    # Plinth
+    # Wide plinth
     boxes("sandstone plinth", [0.76, 0.62, 0.42], [0, 0, 0], [
-        ((0, 0.3, 0), (5.2, 0.6, 5.2)),
-        ((0, 0.65, 0), (4.6, 0.16, 4.6)),
+        ((0, 0.28, 0), (12.0, 0.56, 12.0)),
+        ((0, 0.62, 0), (11.2, 0.16, 11.2)),
     ], metallic=0.05, roughness=0.85)
 
-    # Four splayed legs from the plinth corners up to a mid deck
-    leg_shapes = []
+    # Four splayed legs: a foot plus one long oriented beam into the first deck.
+    feet, legs = [], []
     for sx, sz in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
-        # Two stacked chunky beams approximating a taper
-        leg_shapes.append(((sx * 1.7, 2.2, sz * 1.7), (0.7, 3.2, 0.7)))
-        leg_shapes.append(((sx * 1.05, 5.4, sz * 1.05), (0.58, 3.2, 0.58)))
-    boxes("bronze legs", *bronze, leg_shapes, metallic=0.45, roughness=0.45)
+        feet.append(((sx * 5.05, 0.85, sz * 5.05), (1.85, 1.3, 1.85)))
+        p0 = (sx * 4.95, 1.3, sz * 4.95)
+        p1 = (sx * 2.05, 8.2, sz * 2.05)
+        mid, length, direction = mid_and_dir(p0, p1)
+        legs.append((mid, (1.2, length, 1.2), direction))
+    boxes("bronze feet", *bronze, feet, metallic=0.45, roughness=0.45)
+    boxes("bronze legs", *bronze, legs, metallic=0.45, roughness=0.45)
 
-    # Cross braces at mid height
-    boxes("iron braces", *iron, [
-        ((0, 3.7, 0), (3.4, 0.22, 0.28)),
-        ((0, 3.7, 0), (0.28, 0.22, 3.4)),
-        ((0, 6.8, 0), (2.2, 0.2, 0.24)),
-        ((0, 6.8, 0), (0.24, 0.2, 2.2)),
-    ], metallic=0.5, roughness=0.4)
+    # Arches on all four sides; the -Z face is the one the spawn camera sees.
+    arches = []
+    for axis, sign in (("z", -1), ("z", 1), ("x", -1), ("x", 1)):
+        if axis == "z":
+            arches.append(((0, 7.25, sign * 2.55), (5.6, 0.55, 0.62)))
+            for sx in (-1, 1):
+                p0 = (sx * 4.35, 2.6, sign * 4.55)
+                p1 = (sx * 1.35, 7.15, sign * 2.65)
+                mid, length, direction = mid_and_dir(p0, p1)
+                arches.append((mid, (0.55, length, 0.7), direction))
+        else:
+            arches.append(((sign * 2.55, 7.25, 0), (0.62, 0.55, 5.6)))
+            for sz in (-1, 1):
+                p0 = (sign * 4.55, 2.6, sz * 4.35)
+                p1 = (sign * 2.65, 7.15, sz * 1.35)
+                mid, length, direction = mid_and_dir(p0, p1)
+                arches.append((mid, (0.7, length, 0.55), direction))
+    boxes("iron arches", *iron, arches, metallic=0.5, roughness=0.4)
 
-    # Mid deck + teal accent ring (echoes the charge pad, stays readable)
-    boxes("gold mid deck", *gold, [
-        ((0, 8.15, 0), (3.4, 0.3, 3.4)),
-        ((0, 8.0, 0), (3.0, 0.16, 3.0)),
+    # First observation deck + teal band + railing
+    boxes("gold first deck", *gold, [
+        ((0, 8.15, 0), (6.4, 0.22, 6.4)),
+        ((0, 8.45, 0), (7.3, 0.42, 7.3)),
+        ((0, 8.75, 0), (6.2, 0.18, 6.2)),
     ], metallic=0.55, roughness=0.35)
-    boxes("teal mid ring", *teal, [
-        ((0, 8.38, 0), (3.6, 0.16, 0.28)),
-        ((0, 8.38, 0), (0.28, 0.16, 3.6)),
+    boxes("teal first ring", *teal, [
+        ((0, 8.72, 3.55), (6.6, 0.18, 0.28)),
+        ((0, 8.72, -3.55), (6.6, 0.18, 0.28)),
+        ((3.55, 8.72, 0), (0.28, 0.18, 6.6)),
+        ((-3.55, 8.72, 0), (0.28, 0.18, 6.6)),
     ], metallic=0.2, roughness=0.4)
+    rail = []
+    for sx, sz in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+        rail.append(((sx * 3.35, 9.15, sz * 3.35), (0.22, 0.7, 0.22)))
+    for z in (-3.4, 3.4):
+        rail.append(((0, 9.35, z), (6.8, 0.14, 0.14)))
+    for x in (-3.4, 3.4):
+        rail.append(((x, 9.35, 0), (0.14, 0.14, 6.8)))
+    boxes("iron first rail", *iron, rail, metallic=0.5, roughness=0.4)
 
-    # Upper shaft
-    boxes("bronze shaft", *bronze, [
-        ((0, 11.2, 0), (1.5, 5.8, 1.5)),
-        ((0, 11.2, -0.82), (0.28, 5.4, 0.16)),
-        ((0, 11.2, 0.82), (0.28, 5.4, 0.16)),
-        ((-0.82, 11.2, 0), (0.16, 5.4, 0.28)),
-        ((0.82, 11.2, 0), (0.16, 5.4, 0.28)),
-    ], metallic=0.45, roughness=0.45)
+    # Mid shaft: four tapering corner posts and horizontal lattice rings.
+    posts, braces = [], []
+    for sx, sz in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+        p0 = (sx * 2.0, 8.9, sz * 2.0)
+        p1 = (sx * 1.25, 15.2, sz * 1.25)
+        mid, length, direction = mid_and_dir(p0, p1)
+        posts.append((mid, (0.7, length, 0.7), direction))
+    for y, span in ((10.4, 3.7), (12.3, 3.15), (14.2, 2.65)):
+        braces.append(((0, y, span / 2), (span, 0.2, 0.22)))
+        braces.append(((0, y, -span / 2), (span, 0.2, 0.22)))
+        braces.append(((span / 2, y, 0), (0.22, 0.2, span)))
+        braces.append(((-span / 2, y, 0), (0.22, 0.2, span)))
+    boxes("bronze mid posts", *bronze, posts, metallic=0.45, roughness=0.45)
+    boxes("iron mid braces", *iron, braces, metallic=0.5, roughness=0.4)
 
-    # Lookout
-    boxes("gold lookout", *gold, [
-        ((0, 14.25, 0), (2.8, 0.28, 2.8)),
-        ((0, 14.55, 0), (2.2, 0.18, 2.2)),
+    # Second observation deck
+    boxes("gold second deck", *gold, [
+        ((0, 15.45, 0), (3.4, 0.18, 3.4)),
+        ((0, 15.7, 0), (4.2, 0.32, 4.2)),
+        ((0, 15.95, 0), (3.2, 0.16, 3.2)),
     ], metallic=0.55, roughness=0.35)
-    boxes("teal lookout ring", *teal, [
-        ((0, 14.48, 0), (3.0, 0.14, 0.22)),
-        ((0, 14.48, 0), (0.22, 0.14, 3.0)),
+    boxes("teal second ring", *teal, [
+        ((0, 15.95, 2.05), (4.0, 0.14, 0.2)),
+        ((0, 15.95, -2.05), (4.0, 0.14, 0.2)),
+        ((2.05, 15.95, 0), (0.2, 0.14, 4.0)),
+        ((-2.05, 15.95, 0), (0.2, 0.14, 4.0)),
     ], metallic=0.2, roughness=0.4)
+    rail2 = []
+    for sx, sz in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+        rail2.append(((sx * 1.9, 16.25, sz * 1.9), (0.16, 0.5, 0.16)))
+    for z in (-1.95, 1.95):
+        rail2.append(((0, 16.4, z), (3.9, 0.12, 0.12)))
+    for x in (-1.95, 1.95):
+        rail2.append(((x, 16.4, 0), (0.12, 0.12, 3.9)))
+    boxes("iron second rail", *iron, rail2, metallic=0.5, roughness=0.4)
 
-    # Spire
-    boxes("bronze spire", *bronze, [
-        ((0, 16.1, 0), (1.0, 2.4, 1.0)),
-        ((0, 18.2, 0), (0.62, 1.8, 0.62)),
-        ((0, 19.7, 0), (0.34, 1.2, 0.34)),
-        ((0, 20.55, 0), (0.16, 0.7, 0.16)),
+    # Upper taper + antenna
+    boxes("bronze upper shaft", *bronze, [
+        ((0, 17.5, 0), (1.7, 2.0, 1.7)),
+        ((0, 19.4, 0), (1.15, 1.8, 1.15)),
+        ((0, 21.0, 0), (0.7, 1.4, 0.7)),
+        ((0, 22.3, 0), (0.38, 1.2, 0.38)),
+        ((0, 23.2, 0), (0.18, 0.7, 0.18)),
     ], metallic=0.5, roughness=0.35)
     boxes("gold beacon", [1.0, 0.82, 0.25], [0.8, 0.45, 0.05], [
-        ((0, 21.05, 0), (0.42, 0.42, 0.42)),
+        ((0, 23.7, 0), (0.42, 0.42, 0.42)),
     ], metallic=0.3, roughness=0.3)
 
     write_gltf(doc, blob, DATA / "landmark-tower.gltf")
@@ -474,54 +568,117 @@ def build_sky(width: int = 1024, height: int = 512):
 
 
 # ---------------------------------------------------------------------------
-# Warm asphalt plaza overlay (covers the pale kit ground)
+# Warm plaza / street overlay (covers the pale kit ground)
+# One 40x40 map: a darker asphalt road down the combat lane, varied paving
+# on the sides, monument forecourt at the far end. No repeating parking grid.
 # ---------------------------------------------------------------------------
+
+def _voronoi(x, z, scale):
+    gx = math.floor(x / scale)
+    gz = math.floor(z / scale)
+    best_d = 1e9
+    second = 1e9
+    best_id = (0, 0)
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            cx, cz = gx + di, gz + dj
+            jx = (hash2(cx, cz) - 0.5) * scale * 0.7
+            jz = (hash2(cx + 19, cz + 7) - 0.5) * scale * 0.7
+            px = (cx + 0.5) * scale + jx
+            pz = (cz + 0.5) * scale + jz
+            d = math.hypot(x - px, z - pz)
+            if d < best_d:
+                second = best_d
+                best_d = d
+                best_id = (cx, cz)
+            elif d < second:
+                second = d
+    return best_id, best_d, second
+
 
 def build_plaza(size: int = 512):
     from PIL import Image
     img = Image.new("RGB", (size, size))
     px = img.load()
-    # Light warm asphalt; raster lighting + Reinhard crush dark albedos.
-    asphalt = (210, 184, 158)
-    grit_hi = (228, 204, 176)
-    grit_lo = (188, 162, 136)
-    joint = (246, 226, 196)
-    tiles = 8
-    tile = size // tiles
-    joint_w = 2
-    for y in range(size):
-        for x in range(size):
-            n = value_noise(x / 18.0, y / 18.0)
-            n2 = value_noise(x / 6.0 + 4.0, y / 6.0)
-            mix = 0.6 * n + 0.4 * n2
-            if mix > 0.55:
-                base = grit_hi
-            elif mix < 0.35:
-                base = grit_lo
+    # Authored bright: raster lighting + Reinhard crush dark albedos.
+    road = (168, 156, 142)
+    road_grit = (150, 140, 128)
+    stone_a = (214, 188, 160)
+    stone_b = (200, 176, 150)
+    stone_c = (228, 204, 176)
+    concrete = (200, 196, 188)
+    concrete_b = (186, 182, 174)
+    court = (206, 178, 148)
+    court_b = (190, 164, 134)
+    joint = (236, 220, 196)
+    paint_w = (250, 250, 248)
+    paint_y = (240, 210, 80)
+    world = 40.0
+    road_half = 3.6
+    for iy in range(size):
+        for ix in range(size):
+            # u = X, v = Z, origin at the arena center.
+            x = (ix + 0.5) / size * world - world * 0.5
+            z = (iy + 0.5) / size * world - world * 0.5
+            n = value_noise(ix / 18.0, iy / 18.0)
+            n2 = value_noise(ix / 6.0 + 4.0, iy / 6.0)
+            jitter = int((hash2(ix, iy) - 0.5) * 8)
+
+            on_road = abs(x) <= road_half
+            in_court = z > 11.5 and abs(x) < 8.5
+            if on_road and not in_court:
+                base = road_grit if (0.6 * n + 0.4 * n2) < 0.4 else road
+                r, g, b = base
+                # Edge lines
+                if road_half - 0.18 < abs(x) <= road_half - 0.04:
+                    r, g, b = paint_w
+                # Dashed center line (broken along Z)
+                elif abs(x) < 0.10 and (z + 40) % 2.4 < 1.35:
+                    r, g, b = paint_y
+                # Zebra crosswalk between the pad and the parked target
+                elif 5.15 < z < 6.35:
+                    # Stripes run along Z, repeated across X
+                    if (x + 20) % 0.85 < 0.45:
+                        r, g, b = paint_w
+            elif in_court:
+                cid, d0, d1 = _voronoi(x, z, 3.4)
+                tone = court_b if hash2(cid[0], cid[1]) < 0.5 else court
+                r, g, b = tone
+                if d1 - d0 < 0.18:
+                    r, g, b = joint
+            elif x < 0:
+                cid, d0, d1 = _voronoi(x, z, 4.2)
+                h = hash2(cid[0] * 3, cid[1] * 5)
+                tone = stone_a if h < 0.34 else stone_b if h < 0.68 else stone_c
+                r, g, b = tone
+                if d1 - d0 < 0.16:
+                    r, g, b = joint
             else:
-                base = asphalt
-            # Subtle variation
-            jitter = int((hash2(x, y) - 0.5) * 10)
-            r = max(0, min(255, base[0] + jitter))
-            g = max(0, min(255, base[1] + jitter))
-            b = max(0, min(255, base[2] + jitter))
-            # Tile joints
-            lx = x % tile
-            ly = y % tile
-            if lx < joint_w or ly < joint_w or lx >= tile - joint_w or ly >= tile - joint_w:
-                r, g, b = joint
-            px[x, y] = (r, g, b)
+                cid, d0, d1 = _voronoi(x + 2.0, z - 1.0, 5.0)
+                tone = concrete_b if hash2(cid[0], cid[1] + 2) < 0.5 else concrete
+                r, g, b = tone
+                if d1 - d0 < 0.14:
+                    r, g, b = (210, 206, 198)
+            if not (on_road and not in_court and (
+                (road_half - 0.18 < abs(x) <= road_half - 0.04)
+                or (abs(x) < 0.10 and (z + 40) % 2.4 < 1.35)
+                or (5.15 < z < 6.35 and (x + 20) % 0.85 < 0.45)
+            )):
+                r = max(0, min(255, r + jitter))
+                g = max(0, min(255, g + jitter))
+                b = max(0, min(255, b + jitter))
+            px[ix, iy] = (r, g, b)
     png = DATA / "arena-plaza.png"
     img.save(png, optimize=True)
     print("wrote", png)
 
-    # A 40x40 y-up quad, UVs tiled 8x so the grid reads from spawn.
+    # A 40x40 y-up quad, UV 0-1 so the painted street layout maps once.
     doc = new_doc("Screech TM2 plaza")
     blob = bytearray()
     half = 20.0
     positions = [(-half, 0.0, -half), (half, 0.0, -half), (half, 0.0, half), (-half, 0.0, half)]
     normals = [(0.0, 1.0, 0.0)] * 4
-    uvs = [(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]
+    uvs = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
     indices = [(0,), (1,), (2,), (0,), (2,), (3,)]
 
     def acc(values, packing, kind, bounds=False):
@@ -547,8 +704,8 @@ def build_plaza(size: int = 512):
     doc["samplers"] = [dict(magFilter=9728, minFilter=9728, wrapS=10497, wrapT=10497)]  # nearest, repeat
     doc["textures"] = [dict(sampler=0, source=0)]
     doc["materials"].append(dict(
-        name="warm asphalt",
-        emissiveFactor=[0.28, 0.22, 0.16],
+        name="street and plaza",
+        emissiveFactor=[0.22, 0.18, 0.14],
         pbrMetallicRoughness=dict(
             baseColorTexture=dict(index=0),
             baseColorFactor=[1, 1, 1, 1],
@@ -569,9 +726,55 @@ def build_plaza(size: int = 512):
     print("wrote", DATA / "arena-plaza.gltf")
 
 
+# ---------------------------------------------------------------------------
+# Visual-only curbside planters and rooftop vents. Kept off the fire lane,
+# the charge pad, and the monument plinth. No colliders.
+# Local y=0 sits on the plaza surface.
+# ---------------------------------------------------------------------------
+
+def build_props():
+    doc = new_doc("Screech TM2 arena props")
+    blob = bytearray()
+    boxes, _ = make_accessors(doc, blob)
+
+    terracotta = ([0.62, 0.34, 0.22], [0.04, 0.01, 0.0])
+    soil = ([0.18, 0.12, 0.08], [0, 0, 0])
+    foliage = ([0.12, 0.42, 0.18], [0.02, 0.08, 0.02])
+    metal = ([0.22, 0.24, 0.26], [0.01, 0.01, 0.01])
+
+    planters, dirt, bushes = [], [], []
+    # Flanking the road, clear of spawn (0,0), pad (-4,4), and the fire lane.
+    for x, z in (
+        (-10.0, -6.0), (-10.0, 1.0), (-10.0, 8.5),
+        (10.0, -6.0), (10.0, 1.0), (10.0, 8.5),
+    ):
+        planters.append(((x, 0.28, z), (1.3, 0.56, 1.3)))
+        dirt.append(((x, 0.58, z), (1.05, 0.08, 1.05)))
+        bushes.append(((x, 0.95, z), (0.7, 0.7, 0.7)))
+        bushes.append(((x + 0.15, 1.35, z - 0.1), (0.45, 0.45, 0.45)))
+    boxes("terracotta planters", *terracotta, planters, metallic=0.05, roughness=0.85)
+    boxes("planter soil", *soil, dirt, metallic=0.0, roughness=0.95)
+    boxes("planter bushes", *foliage, bushes, metallic=0.0, roughness=0.8)
+
+    vents = []
+    for x, z in (
+        (14.0, 13.0), (-14.0, 13.0),
+        (14.0, -14.0), (-14.0, -14.0),
+        (12.5, 5.0), (-12.5, 11.0),
+    ):
+        vents.append(((x, 0.4, z), (0.9, 0.8, 0.9)))
+        vents.append(((x, 0.85, z), (1.05, 0.12, 1.05)))
+        vents.append(((x, 1.05, z), (0.35, 0.3, 0.35)))
+    boxes("rooftop vents", *metal, vents, metallic=0.55, roughness=0.4)
+
+    write_gltf(doc, blob, DATA / "arena-props.gltf")
+    print("wrote", DATA / "arena-props.gltf")
+
+
 if __name__ == "__main__":
     DATA.mkdir(exist_ok=True)
     build_tower()
     build_walls()
     build_plaza()
+    build_props()
     build_sky()
