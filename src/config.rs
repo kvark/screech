@@ -47,12 +47,31 @@ pub struct Vehicle {
     pub axles: Vec<Axle>,
 }
 
+fn default_light_dir() -> [f32; 3] {
+    [0.35, 1.0, 0.25]
+}
+
+fn default_light_color() -> [f32; 3] {
+    [1.8, 1.7, 1.5]
+}
+
+fn default_ambient_color() -> [f32; 3] {
+    [0.28, 0.36, 0.52]
+}
+
 #[derive(serde::Deserialize)]
 pub struct Level {
     #[serde(default)]
     pub environment: String,
     pub gravity: f32,
     pub average_luminocity: f32,
+    /// Direction towards the raster directional light.
+    #[serde(default = "default_light_dir")]
+    pub light_dir: [f32; 3],
+    #[serde(default = "default_light_color")]
+    pub light_color: [f32; 3],
+    #[serde(default = "default_ambient_color")]
+    pub ambient_color: [f32; 3],
     pub spawn_pos: [f32; 3],
     pub ground: blade_engine::config::Object,
 }
